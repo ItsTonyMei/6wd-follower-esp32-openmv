@@ -1,0 +1,29 @@
+# Build artifacts
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python cache
+__pycache__/
+*.pyc
+
+# TFLite model (large binary)
+*.tflite
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude Code (internal plugin data)
+.claude/
+
+# CodeBuddy worktrees
+.codebuddy/
