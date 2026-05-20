@@ -1,7 +1,8 @@
-# 接线文档 — 6轮车-UniBoard
+# 接线文档 — 6WD Follower UniBoard
 
-> 更新时间：2026-04-28
+> 更新时间：2026-05-20
 > 系统组成：ESP32（统一控制）+ ESP8266 板（仅供电分配）+ OpenMV（视觉）
+> 技术术语：GPIO, UART, PWM, LEDC, H-bridge, HC-SR04, voltage divider, GND, VCC
 
 ---
 
@@ -159,4 +160,4 @@ OpenMV 通过 USB 供电，3.3V TTL 电平，无需电平转换。
 
 ---
 
-*接线文档编写日期：2026-04-28*
+*接线文档更新日期：2026-05-20*

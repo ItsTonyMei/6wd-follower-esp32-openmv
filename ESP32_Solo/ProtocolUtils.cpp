@@ -1,11 +1,11 @@
 #include "ProtocolUtils.h"
 
-// Zero-allocation overload for const char*
+// ─── const char* 版本 (零 heap 分配) ───
 bool verifyChecksum(const char* line, int prefixLen) {
     const char* star = strchr(line, '*');
-    int starPos = star ? (star - line) : -1;
+    int starPos = star ? (int)(star - line) : -1;
     if (starPos <= prefixLen) {
-        // No '*' or '*' too early: backward-compatible, accept
+        // 无 '*' 或 '*' 位置过早 → 向后兼容，直接通过
         return true;
     }
     uint8_t checksum = 0;
@@ -16,10 +16,11 @@ bool verifyChecksum(const char* line, int prefixLen) {
     return checksum == expected;
 }
 
+// ─── String 版本 ───
 bool verifyChecksum(const String& line, int prefixLen) {
     int starPos = line.indexOf('*');
     if (starPos <= prefixLen) {
-        // No '*' or '*' too early: backward-compatible, accept
+        // 无 '*' 或 '*' 位置过早 → 向后兼容，直接通过
         return true;
     }
     uint8_t checksum = 0;

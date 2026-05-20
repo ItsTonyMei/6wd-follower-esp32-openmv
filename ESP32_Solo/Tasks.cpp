@@ -1,53 +1,24 @@
 #include "Tasks.h"
 #include "Config.h"
-#include "ProtocolUtils.h"
 #include "VisionBridge.h"
 #include "FollowLogic.h"
 #include "DataAggregator.h"
 #include "DashboardServer.h"
 #include <esp_task_wdt.h>
-#include <cstring>
 
 // ============================================================================
+// 外部引用（定义于 ESP32_Solo.ino）
 // External references (defined in ESP32_Solo.ino)
 // ============================================================================
 extern VisionBridge       visionBridge;
 extern FollowLogic        followLogic;
 extern DataAggregator     aggregator;
 extern QueueHandle_t      motorCmdQueue;
-extern SemaphoreHandle_t  aggregatorMutex;
 extern DashboardServer   webServer;
 
 // ============================================================================
-// Helper: lock/unlock aggregator (consistent with MotorTask pattern)
-// ============================================================================
-static bool lockAggregator(TickType_t waitTicks) {
-    return xSemaphoreTake(aggregatorMutex, waitTicks) == pdTRUE;
-}
-static void unlockAggregator() {
-    xSemaphoreGive(aggregatorMutex);
-}
-
-// ============================================================================
-// Parse FollowLogic command string → MotorCmd struct
-// ============================================================================
-static MotorCmd parseFollowCmd(const char* cmd) {
-    if (strcmp(cmd, "STOP") == 0) return {CarCmd::STOP, 0};
-
-    const char* colon = strchr(cmd, ':');
-    if (!colon) return {CarCmd::STOP, 0};
-
-    int pwm = atoi(colon + 1);
-    if (strncmp(cmd, "FWD", 3) == 0) return {CarCmd::FWD, pwm};
-    if (strncmp(cmd, "REV", 3) == 0) return {CarCmd::REV, pwm};
-    if (strncmp(cmd, "LFT", 3) == 0) return {CarCmd::LFT, pwm};
-    if (strncmp(cmd, "RGT", 3) == 0) return {CarCmd::RGT, pwm};
-
-    return {CarCmd::STOP, 0};
-}
-
-// ============================================================================
-// VisionTask: OpenMV UART1 + FollowLogic
+// VisionTask: OpenMV UART1 接收 → FollowLogic 决策 → MotorCmd queue
+// VisionTask: reads OpenMV VIS data via UART1, runs FollowLogic, sends MotorCmd
 // ============================================================================
 void visionTaskFunc(void* param) {
     Serial.println("[VisionTask] started");
@@ -56,10 +27,12 @@ void visionTaskFunc(void* param) {
     for (;;) {
         esp_task_wdt_reset();
 
+        // 读取 UART1，解析 VIS 协议帧
         visionBridge.handle();
 
         if (visionBridge.hasValidReading()) {
-            if (lockAggregator(pdMS_TO_TICKS(10))) {
+            // 更新 VisState 到 aggregator（供 Web Dashboard 轮询）
+            if (aggregator.lock(pdMS_TO_TICKS(10))) {
                 VisState vs;
                 vs.valid = visionBridge.hasValidReading();
                 vs.hasPerson = visionBridge.hasPerson();
@@ -74,17 +47,17 @@ void visionTaskFunc(void* param) {
                 vs.feetY = visionBridge.feetY();
                 vs.timestamp = millis();
                 aggregator.updateVis(vs);
-                unlockAggregator();
+                aggregator.unlock();
             }
 
-            const char* cmd = followLogic.update(
+            // FollowLogic 决策 → MotorCmd → 发送到 MotorTask queue
+            MotorCmd mc = followLogic.update(
                 visionBridge.hasPerson(),
                 visionBridge.cx(),
                 visionBridge.feetY(),
                 visionBridge.distScore()
             );
 
-            MotorCmd mc = parseFollowCmd(cmd);
             xQueueSend(motorCmdQueue, &mc, pdMS_TO_TICKS(10));
         }
 
@@ -93,7 +66,7 @@ void visionTaskFunc(void* param) {
 }
 
 // ============================================================================
-// WebTask: WiFi AP + Dashboard
+// WebTask: WiFi AP + HTTP Dashboard (Core 1, pri 1)
 // ============================================================================
 void webTaskFunc(void* param) {
     Serial.println("[WebTask] started");

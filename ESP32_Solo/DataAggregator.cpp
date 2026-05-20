@@ -1,35 +1,19 @@
 #include "DataAggregator.h"
 #include "FollowLogic.h"
+#include <cstdio>
 
-void DataAggregator::begin() {}
+void DataAggregator::begin(SemaphoreHandle_t mutex) {
+    mutex_ = mutex;
+}
 
-// Escape JSON string: handle quotes, backslashes, and control characters
-static String escapeJson(const String& s) {
-    String result;
-    result.reserve(s.length() * 2);
-    for (size_t i = 0; i < s.length(); i++) {
-        char c = s[i];
-        if (c == '"' || c == '\\') {
-            result += '\\';
-            result += c;
-        } else if (c == '\n') {
-            result += '\\';
-            result += 'n';
-        } else if (c == '\r') {
-            result += '\\';
-            result += 'r';
-        } else if (c == '\t') {
-            result += '\\';
-            result += 't';
-        } else if (c >= 0x00 && c <= 0x1F) {
-            result += "\\u00";
-            result += "0123456789ABCDEF"[(c >> 4) & 0x0F];
-            result += "0123456789ABCDEF"[c & 0x0F];
-        } else {
-            result += c;
-        }
-    }
-    return result;
+bool DataAggregator::lock(TickType_t waitTicks) {
+    if (mutex_ == nullptr) return true;
+    return xSemaphoreTake(mutex_, waitTicks) == pdTRUE;
+}
+
+void DataAggregator::unlock() {
+    if (mutex_ == nullptr) return;
+    xSemaphoreGive(mutex_);
 }
 
 void DataAggregator::updateCar(const CarState& state) {
@@ -48,53 +32,56 @@ VisState DataAggregator::getVis() const {
     return visState_;
 }
 
-String DataAggregator::getJson() const {
+String DataAggregator::getJson() {
     unsigned long now = millis();
 
-    // Cache JSON for 50ms to avoid spam
+    // 50ms cache 避免高频重复生成 JSON
     if (now - lastJsonMs_ < 50) {
         return cachedJson_;
     }
-
     lastJsonMs_ = now;
 
-    String json;
-    json.reserve(256);
-    json = "{";
-    json += "\"car\":{";
-    json += "\"v\":" + String(carState_.valid ? 1 : 0) + ",";
-    json += "\"l\":" + String(carState_.leftPwm) + ",";
-    json += "\"r\":" + String(carState_.rightPwm) + ",";
-    json += "\"ul\":" + String(carState_.leftUltrasonic) + ",";
-    json += "\"ur\":" + String(carState_.rightUltrasonic) + ",";
-    json += "\"act\":\"" + escapeJson(carState_.action) + "\",";
-    json += "\"ts\":" + String(carState_.timestamp);
-    json += "},";
+    // 使用 snprintf 一次性格式化为固定 buffer，避免 String + 级联导致的 heap 碎片
+    // Use snprintf into fixed buffer to avoid heap fragmentation from String concatenation
+    char buf[512];
+    int len = snprintf(buf, sizeof(buf),
+        "{"
+        "\"car\":{\"v\":%d,\"l\":%d,\"r\":%d,\"ul\":%d,\"ur\":%d,\"act\":\"%s\",\"ts\":%lu},"
+        "\"vis\":{\"v\":%d,\"hp\":%d,\"cx\":%d,\"cy\":%d,\"w\":%d,\"h\":%d,"
+        "\"conf\":%.2f,\"type\":\"%s\",\"ds\":%.2f,\"fy\":%d,\"ts\":%lu},"
+        "\"snap\":0,"
+        "\"cfg\":{\"ds_stop\":%.2f,\"ds_slow\":%.2f,\"ds_far\":%.2f}"
+        "}",
+        // car
+        carState_.valid ? 1 : 0,
+        carState_.leftPwm,
+        carState_.rightPwm,
+        carState_.leftUltrasonic,
+        carState_.rightUltrasonic,
+        carState_.action,
+        carState_.timestamp,
+        // vis
+        visState_.valid ? 1 : 0,
+        visState_.hasPerson ? 1 : 0,
+        visState_.cx,
+        visState_.cy,
+        visState_.w,
+        visState_.h,
+        visState_.confidence,
+        visState_.type,
+        visState_.distScore,
+        visState_.feetY,
+        visState_.timestamp,
+        // cfg (thresholds from FollowLogic, 前端颜色映射需与此一致)
+        FollowLogic::DIST_SCORE_STOP,
+        FollowLogic::DIST_SCORE_SLOW,
+        FollowLogic::DIST_SCORE_FAR
+    );
 
-    json += "\"vis\":{";
-    json += "\"v\":" + String(visState_.valid ? 1 : 0) + ",";
-    json += "\"hp\":" + String(visState_.hasPerson ? 1 : 0) + ",";
-    json += "\"cx\":" + String(visState_.cx) + ",";
-    json += "\"cy\":" + String(visState_.cy) + ",";
-    json += "\"w\":" + String(visState_.w) + ",";
-    json += "\"h\":" + String(visState_.h) + ",";
-    json += "\"conf\":" + String(visState_.confidence, 2) + ",";
-    json += "\"type\":\"" + escapeJson(String(visState_.type)) + "\",";
-    json += "\"ds\":" + String(visState_.distScore, 2) + ",";
-    json += "\"fy\":" + String(visState_.feetY) + ",";
-    json += "\"ts\":" + String(visState_.timestamp);
-    json += "},";
-
-    json += "\"snap\":0,";
-
-    // Thresholds from FollowLogic (must match frontend for correct color mapping)
-    json += "\"cfg\":{";
-    json += "\"ds_stop\":" + String(FollowLogic::DIST_SCORE_STOP, 2) + ",";
-    json += "\"ds_slow\":" + String(FollowLogic::DIST_SCORE_SLOW, 2) + ",";
-    json += "\"ds_far\":" + String(FollowLogic::DIST_SCORE_FAR, 2);
-    json += "}";
-    json += "}";
-
-    cachedJson_ = json;
-    return json;
+    if (len < 0 || len >= (int)sizeof(buf)) {
+        cachedJson_ = "{\"error\":\"json buffer overflow\"}";
+    } else {
+        cachedJson_ = buf;
+    }
+    return cachedJson_;
 }

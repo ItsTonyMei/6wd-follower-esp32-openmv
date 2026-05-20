@@ -2,9 +2,8 @@
 #include "DataAggregator.h"
 #include "index_html.h"
 
-void DashboardServer::begin(DataAggregator* aggregator, SemaphoreHandle_t aggregatorMutex) {
+void DashboardServer::begin(DataAggregator* aggregator) {
     aggregator_ = aggregator;
-    aggregatorMutex_ = aggregatorMutex;
     server_ = new WebServer(80);
 
     server_->on("/", [this]() { handleRoot(); });
@@ -20,23 +19,25 @@ void DashboardServer::handle() {
     server_->handleClient();
 }
 
+// 首页: 嵌入式 SPA Dashboard
 void DashboardServer::handleRoot() {
     server_->send(200, "text/html", INDEX_HTML);
 }
 
+// /status: 返回聚合 JSON (CarState + VisState + cfg thresholds)
 void DashboardServer::handleStatus() {
     String json;
-    if (xSemaphoreTake(aggregatorMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (aggregator_->lock(pdMS_TO_TICKS(100))) {
         json = aggregator_->getJson();
-        xSemaphoreGive(aggregatorMutex_);
+        aggregator_->unlock();
     } else {
         json = "{\"error\":\"mutex timeout\"}";
     }
     server_->send(200, "application/json", json);
 }
 
+// /snapshot: 未实现 (需要双向 UART 到 OpenMV，未接线)
 void DashboardServer::handleSnapshot() {
-    // SNAP not implemented — requires bidirectional UART to OpenMV (not wired)
     server_->send(501, "text/plain", "SNAP NOT IMPLEMENTED");
 }
 

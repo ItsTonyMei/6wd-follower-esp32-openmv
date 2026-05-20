@@ -2,13 +2,16 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
-#include <freertos/semphr.h>
 
 class DataAggregator;
 
+// ============================================================================
+// DashboardServer: WiFi AP + HTTP Dashboard（WebTask 驱动，Core 1）
+// DashboardServer: WiFi AP HTTP server serving single-page dashboard
+// ============================================================================
 class DashboardServer {
 public:
-    void begin(DataAggregator* aggregator, SemaphoreHandle_t aggregatorMutex);
+    void begin(DataAggregator* aggregator);
     void handle();
 
 private:
@@ -17,7 +20,6 @@ private:
     void handleSnapshot();
     void handleNotFound();
 
-    WebServer* server_;
-    DataAggregator* aggregator_;
-    SemaphoreHandle_t aggregatorMutex_;
+    WebServer* server_          = nullptr;
+    DataAggregator* aggregator_ = nullptr;
 };

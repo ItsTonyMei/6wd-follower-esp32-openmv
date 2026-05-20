@@ -1,6 +1,6 @@
 // ============================================================================
-// Web Dashboard for 6轮车 UniBoard
-// Shows real-time motor, ultrasonic, vision, and distance score data
+// 6WD Follower — Web Dashboard (embedded SPA)
+// 实时显示: motor PWM / ultrasonic / vision detection / distScore
 // ============================================================================
 
 const char INDEX_HTML[] PROGMEM = R"rawliteral(

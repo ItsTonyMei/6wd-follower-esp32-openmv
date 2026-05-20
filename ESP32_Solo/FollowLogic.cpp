@@ -1,25 +1,11 @@
 #include "FollowLogic.h"
-#include <cstring>
 
-// Frame center for 192-wide window
+// 192-wide model 窗口中心
 static constexpr int FRAME_CENTER = 96;
 
-// Compute offset from frame center (reduces duplication in update())
-static int computeOffset(int cx) {
-    return cx - FRAME_CENTER;
-}
-
-// Execute turn command based on offset and speed threshold
-static const char* turnCommand(int offset, float threshold, const char* stopCmd, const char* turnCmd) {
-    return (offset < -FollowLogic::CX_MARGIN || offset > FollowLogic::CX_MARGIN)
-        ? ((offset < -FollowLogic::CX_MARGIN) ? (threshold >= FollowLogic::DIST_SCORE_SLOW ? stopCmd : "LFT:120") : (threshold >= FollowLogic::DIST_SCORE_SLOW ? stopCmd : "RGT:120"))
-        : nullptr;
-}
-
-const char* FollowLogic::update(bool hasPerson, int cx, int feetY, float distScore) {
+MotorCmd FollowLogic::update(bool hasPerson, int cx, int feetY, float distScore) {
     if (!hasPerson) {
-        lastCmd_ = "STOP";
-        return lastCmd_;
+        return {CarCmd::STOP, 0};
     }
 
     if (distScore > 0.0f) {
@@ -29,51 +15,70 @@ const char* FollowLogic::update(bool hasPerson, int cx, int feetY, float distSco
     }
 }
 
-const char* FollowLogic::handleDistScore(int cx, float distScore) {
+MotorCmd FollowLogic::handleDistScore(int cx, float distScore) {
+    // 非常近 → STOP
     if (distScore >= DIST_SCORE_STOP) {
-        return "STOP";
+        return {CarCmd::STOP, 0};
     }
 
+    // 比较远 → 快速接近
     if (distScore < DIST_SCORE_FAR) {
-        return "FWD:150";
+        return {CarCmd::FWD, FAST_SPEED};
     }
 
-    int offset = computeOffset(cx);
+    int offset = cx - FRAME_CENTER;
 
+    // 偏左 → 左转（近距离禁转向，防止撞到人）
     if (offset < -CX_MARGIN) {
-        return (distScore >= DIST_SCORE_SLOW) ? "STOP" : "LFT:120";
+        return (distScore >= DIST_SCORE_SLOW)
+            ? MotorCmd{CarCmd::STOP, 0}
+            : MotorCmd{CarCmd::LFT, TURN_SPEED};
     }
+    // 偏右 → 右转
     if (offset > CX_MARGIN) {
-        return (distScore >= DIST_SCORE_SLOW) ? "STOP" : "RGT:120";
+        return (distScore >= DIST_SCORE_SLOW)
+            ? MotorCmd{CarCmd::STOP, 0}
+            : MotorCmd{CarCmd::RGT, TURN_SPEED};
     }
 
-    // Centered
+    // 居中 → 根据距离选择速度
     if (distScore >= DIST_SCORE_SLOW && distScore < DIST_SCORE_STOP) {
-        return "FWD:50";
+        return {CarCmd::FWD, SLOW_SPEED};       // 较近 → 慢速
     }
     if (distScore >= 0.50f) {
-        return "FWD:100";
+        return {CarCmd::FWD, MEDIUM_SPEED};     // 中等距离
     }
-    return "FWD:100";
+    return {CarCmd::FWD, MEDIUM_SPEED};
 }
 
-const char* FollowLogic::handleFeetY(int cx, int feetY) {
+MotorCmd FollowLogic::handleFeetY(int cx, int feetY) {
+    // 太近 → STOP
     if (feetY >= FEETY_STOP) {
-        return "STOP";
+        return {CarCmd::STOP, 0};
     }
 
+    // 比较远 → 快速接近
     if (feetY < FEETY_FAR) {
-        return "FWD:150";
+        return {CarCmd::FWD, FAST_SPEED};
     }
 
-    int offset = computeOffset(cx);
+    int offset = cx - FRAME_CENTER;
 
+    // 偏左 → 左转（近距离禁转向）
     if (offset < -CX_MARGIN) {
-        return (feetY >= FEETY_SLOW) ? "STOP" : "LFT:120";
+        return (feetY >= FEETY_SLOW)
+            ? MotorCmd{CarCmd::STOP, 0}
+            : MotorCmd{CarCmd::LFT, TURN_SPEED};
     }
+    // 偏右 → 右转
     if (offset > CX_MARGIN) {
-        return (feetY >= FEETY_SLOW) ? "STOP" : "RGT:120";
+        return (feetY >= FEETY_SLOW)
+            ? MotorCmd{CarCmd::STOP, 0}
+            : MotorCmd{CarCmd::RGT, TURN_SPEED};
     }
 
-    return (feetY >= FEETY_SLOW) ? "STOP" : "FWD:100";
+    // 居中 → 安全距离前进 / 较近时 STOP
+    return (feetY >= FEETY_SLOW)
+        ? MotorCmd{CarCmd::STOP, 0}
+        : MotorCmd{CarCmd::FWD, MEDIUM_SPEED};
 }

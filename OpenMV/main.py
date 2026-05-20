@@ -1,9 +1,9 @@
 # ============================================================================
 # 6WD Follower — OpenMV Person Detection + ESP32 UART Bridge
-# Compatible: OpenMV H7 Plus (fw 4.x) and N6 (fw 5.0.0)
+# 兼容: OpenMV H7 Plus (fw 4.x) 和 N6 (fw 5.0.0)
 #
-# N6: model must be uploaded via OpenMV IDE → Tools → Edit ROM FS → Add File
-#     Select yolo_lc_192.tflite → Commit (IDE auto-converts for Neural-ART NPU)
+# N6 用户注意: model 须通过 OpenMV IDE → Tools → Edit ROM FS → Add File
+#     选择 yolo_lc_192.tflite → Commit (IDE 自动转换为 Neural-ART NPU 格式)
 # ============================================================================
 
 import gc
@@ -14,7 +14,7 @@ import ml
 from ml.postprocessing.darknet import YoloLC
 
 # ============================================================================
-# Board detection — N6 uses csi, H7 Plus uses sensor
+# Board detection — N6 使用 csi 模块, H7 Plus 使用 sensor 模块
 # ============================================================================
 IS_N6 = False
 try:
@@ -24,46 +24,49 @@ except ImportError:
     import sensor as _cam_mod
 
 # ============================================================================
-# Configuration (single source of truth)
+# Configuration (single source of truth — 所有可调参数集中于此)
 # ============================================================================
 
-# ---- Camera ----
+# ---- Camera (摄像头) ----
 CAMERA_FRAMESIZE    = _cam_mod.QVGA      # 320x240
-CAMERA_PIXFORMAT    = _cam_mod.RGB565    # YOLO LC requires color
+CAMERA_PIXFORMAT    = _cam_mod.RGB565    # YOLO LC 需要彩色输入
 CAMERA_CONTRAST     = 3
 CAMERA_GAINCEILING  = 16
 CAMERA_HMIRROR      = False
 CAMERA_VFLIP        = False
 CAMERA_STABILIZE_MS = 2000
-SENSOR_SKIP_FRAMES  = 2                 # ~10 FPS effective
+SENSOR_SKIP_FRAMES  = 2                 # 跳帧 → ~10 FPS effective
 
-# Model input (center-crop of QVGA)
+# Model 输入 (中心裁剪 QVGA → 192x192)
 MODEL_W = 192
 MODEL_H = 192
 
-# ---- Detection ----
-DETECTION_THRESHOLD = 0.4               # YOLO LC confidence (0–1)
+# ---- Detection (YOLO LC) ----
+DETECTION_THRESHOLD = 0.4               # confidence threshold (0-1)
 
-# ---- Multi-feature distance estimation ----
-AREA_VERY_CLOSE = 0.50                  # > this → STOP
-AREA_CLOSE      = 0.30                  # > this → near mode
-AREA_FAR        = 0.10                  # <= this → far mode
+# ---- Multi-feature distance estimation (多特征融合距离估计) ----
+AREA_VERY_CLOSE = 0.50                  # area_ratio > this → STOP
+AREA_CLOSE      = 0.30                  # area_ratio > this → near mode
+AREA_FAR        = 0.10                  # area_ratio <= this → far mode
 
+# Near mode 权重 (area_ratio > AREA_CLOSE)
 WEIGHT_CLOSE_AREA  = 0.7
 WEIGHT_CLOSE_FEETY = 0.3
+# Medium mode 权重 (AREA_FAR < area_ratio <= AREA_CLOSE)
 WEIGHT_MEDIUM_FEETY = 0.6
 WEIGHT_MEDIUM_AREA  = 0.4
+# Far mode 权重 (area_ratio <= AREA_FAR)
 WEIGHT_FAR_FEETY = 0.8
 WEIGHT_FAR_AREA  = 0.2
 
-TOP_Y_THRESHOLD = 10                   # top_y < this + area > CLOSE → extremely close
+TOP_Y_THRESHOLD = 10                   # top_y < this + area > CLOSE → 极近 (STOP)
 
-# Legacy feet_y fallback thresholds (192x192 window)
+# Legacy feetY fallback 阈值 (192x192 窗口, distScore 不可用时降级)
 FEETY_CLOSE = 155                       # person too close → STOP
 FEETY_FAR   = 80                        # person too far → FWD
 
-# ---- Behavior ----
-TRACK_DEADBAND         = 0.08          # ~15px at 192 width
+# ---- Behavior (行为参数) ----
+TRACK_DEADBAND         = 0.08           # ~15px at 192 width
 NO_PERSON_STOP_FRAMES  = 5
 
 # ---- Debug ----
@@ -71,7 +74,7 @@ DRAW_DEBUG     = True
 PRINT_EVERY_MS = 500
 GC_EVERY_FRAMES = 10
 
-# ---- Validate critical thresholds at import time ----
+# ---- Validate critical thresholds at import time (启动时校验) ----
 assert 0.0 <= DETECTION_THRESHOLD <= 1.0
 assert AREA_FAR < AREA_CLOSE < AREA_VERY_CLOSE
 assert TOP_Y_THRESHOLD > 0
@@ -81,17 +84,19 @@ assert SENSOR_SKIP_FRAMES >= 0
 assert CAMERA_STABILIZE_MS > 0
 
 # ============================================================================
-# Debug drawing
+# Debug drawing (调试叠加层绘制)
 # ============================================================================
 
 def draw_overlay(img, frame_w, frame_h, frame_cx, frame_cy,
                  status, target_rect, target_cx, target_cy, target_feet_y,
                  score, fps, detect_count,
                  motion_cmd="", dist_category="", dist_score=0.0, raw_features=None):
+    # 画面中心十字线
     img.draw_cross(frame_cx, frame_cy, color=200, size=6)
 
     if target_rect:
         x, y, w, h = target_rect
+        # 根据距离分类着色: STOP=红, CLOSE_SLOW=橙, MEDIUM=蓝, FAR/FULL_SPEED=绿
         if dist_category == 'STOP':
             box_color = (255, 0, 0)
         elif dist_category == 'CLOSE_SLOW':
@@ -105,14 +110,14 @@ def draw_overlay(img, frame_w, frame_h, frame_cx, frame_cy,
         img.draw_circle(int(target_cx), int(target_cy), 4, color=box_color, thickness=2)
         img.draw_circle(int(target_cx), int(target_feet_y), 5, color=(255, 0, 0), thickness=2)
 
-        # Distance score bar
+        # 距离分条 (Distance score bar)
         bar_x, bar_y = 3, frame_h - 12
         bar_w = int(dist_score * (frame_w - 6))
         img.draw_rectangle(bar_x, bar_y, frame_w - 6, 8, color=80, thickness=1)
         if bar_w > 0:
             img.draw_rectangle(bar_x, bar_y, bar_w, 8, color=box_color, fill=True)
 
-    # Top-left status
+    # 左上角状态信息
     img.draw_string(3, 3, "%.1f fps" % fps, color=(255, 255, 255), scale=1)
     img.draw_string(3, 13, "YOLO-LC person", color=(0, 220, 255), scale=1)
     if dist_category:
@@ -120,14 +125,14 @@ def draw_overlay(img, frame_w, frame_h, frame_cx, frame_cy,
     else:
         img.draw_string(3, 23, "No person", color=(255, 100, 100), scale=1)
 
-    # Confidence (top-right)
+    # 右上角 confidence
     img.draw_string(frame_w - 38, 3, "%.2f" % score, color=(0, 255, 0), scale=1)
 
-    # feet_y indicator
+    # feetY 指示器
     if target_feet_y is not None:
         img.draw_string(3, frame_h - 10, "fy=%d" % target_feet_y, color=(255, 100, 0), scale=1)
 
-    # Raw features
+    # 原始特征值 (area_ratio, top_y)
     if raw_features is not None and DRAW_DEBUG:
         ar = raw_features.get('area_ratio', 0)
         ty = raw_features.get('top_y', 0)
@@ -180,14 +185,17 @@ class PersonDetector:
         detections = self.detect(img)
         if not detections:
             return None
+        # 选底部最低的检测框（最接近的人）
         detections.sort(key=lambda d: d[0][1] + d[0][3], reverse=True)
         return detections[0]
 
     def person_info(self, img, frame_w, frame_h):
+        """返回 (cx, cy, w, h, feet_y, score) 或 None"""
         detection = self.best_detection(img)
         if detection is None:
             return None
         (x, y, w, h), score = detection
+        # 从 model 坐标 (192x192) 缩放到 frame 坐标
         scale_x = frame_w / 192.0
         scale_y = frame_h / 192.0
         cx = int((x + w // 2) * scale_x)
@@ -198,6 +206,7 @@ class PersonDetector:
         return (cx, cy, w_s, h_s, feet_y, score)
 
     def estimate_distance(self, cx, cy, w, h, feet_y, frame_w, frame_h):
+        """多特征融合距离估计 → (category, dist_score, raw_features)"""
         area_ratio = (w * h) / (frame_w * frame_h)
         top_y = cy - h // 2
 
@@ -206,24 +215,29 @@ class PersonDetector:
             'w': w, 'h': h, 'frame_w': frame_w, 'frame_h': frame_h,
         }
 
+        # Segment 1: 极近 (area_ratio > 0.50) → STOP
         if area_ratio > AREA_VERY_CLOSE:
             return ('STOP', 1.0, raw_features)
 
+        # Segment 2: 头部越过画面上边界 + area > CLOSE → STOP
         if top_y < TOP_Y_THRESHOLD and area_ratio > AREA_CLOSE:
             return ('STOP', 1.0, raw_features)
 
+        # Segment 3: Near mode — 加权融合 area_ratio + feet_y
         if area_ratio > AREA_CLOSE:
             area_score = min(1.0, area_ratio / AREA_VERY_CLOSE)
             feet_y_score = min(1.0, feet_y / MODEL_H)
             distance_score = area_score * WEIGHT_CLOSE_AREA + feet_y_score * WEIGHT_CLOSE_FEETY
             return ('CLOSE_SLOW', distance_score, raw_features)
 
+        # Segment 4: Medium mode
         if area_ratio > AREA_FAR:
             feet_y_score = min(1.0, feet_y / MODEL_H)
             area_score = area_ratio / AREA_CLOSE
             distance_score = feet_y_score * WEIGHT_MEDIUM_FEETY + area_score * WEIGHT_MEDIUM_AREA
             return ('MEDIUM', distance_score, raw_features)
 
+        # Segment 5: Far mode
         feet_y_score = max(0.0, min(1.0, feet_y / FEETY_FAR)) if feet_y < FEETY_FAR else 1.0
         area_score = area_ratio / AREA_FAR
         distance_score = feet_y_score * WEIGHT_FAR_FEETY + area_score * WEIGHT_FAR_AREA
@@ -287,6 +301,7 @@ FRAME_W, FRAME_H, FRAME_CX, FRAME_CY = setup_camera()
 
 # ============================================================================
 # UART bridge to ESP32 (P4 = TX, 115200 baud)
+# 单向发送 VIS 协议帧到 ESP32 UART1 (GPIO15 RX)
 # ============================================================================
 
 uart = pyb.UART(3, 115200)
@@ -321,16 +336,16 @@ while True:
     clock.tick()
     now_ms = pyb.millis()
 
-    # Frame throttling
+    # 帧跳 (Frame throttling) → ~10 FPS
     frame_skip_counter += 1
     if frame_skip_counter <= SENSOR_SKIP_FRAMES:
         continue
     frame_skip_counter = 0
 
-    # Capture
+    # 采集 (Capture)
     img = capture()
 
-    # Detection
+    # 检测 (Detection)
     info = detector.person_info(img, FRAME_W, FRAME_H)
     dist_category = ""
     dist_score = 0.0
@@ -342,6 +357,7 @@ while True:
         no_person_count = 0
         total_detections += 1
 
+        # 距离估计
         dist_category, dist_score, raw_features = detector.estimate_distance(
             target_cx, target_cy, target_w, target_h, target_feet_y, FRAME_W, FRAME_H)
 
@@ -358,7 +374,7 @@ while True:
             img.draw_string(3, 13, "YOLO-LC person", color=(0, 220, 255), scale=1)
             img.draw_string(3, 23, "No person", color=(255, 100, 100), scale=1)
 
-    # UART output every 200ms
+    # UART VIS 协议输出 (每 200ms)
     if pyb.elapsed_millis(last_vis_ms) >= 200:
         last_vis_ms = now_ms
         if info is not None:
@@ -366,6 +382,7 @@ while True:
                 target_cx, target_cy, target_w, target_h, target_feet_y, score, dist_score)
         else:
             data_str = "0,0,0,0,0,0.00,NONE,0.00"
+        # XOR checksum
         checksum = 0
         for ch in data_str:
             checksum ^= ord(ch)
@@ -375,7 +392,7 @@ while True:
             uart_write_errors += 1
             print("UART error: %s (count=%d)" % (e, uart_write_errors))
 
-    # Terminal debug output
+    # 终端 debug 输出
     if pyb.elapsed_millis(last_print_ms) >= PRINT_EVERY_MS:
         last_print_ms = now_ms
         if info is not None:
@@ -389,7 +406,7 @@ while True:
 
     frame_counter += 1
 
-    # Memory
+    # 内存管理 (Memory)
     del img
     if info is not None:
         del info

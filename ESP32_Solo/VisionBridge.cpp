@@ -2,8 +2,7 @@
 #include "Config.h"
 #include "ProtocolUtils.h"
 
-// UART1: RX=GPIO15, TX=GPIO4 (TX not used)
-// OpenMV sends VIS:cx,cy,w,h,feet_y,conf,TYPE,dist_score\r\n
+// UART1: RX=GPIO15, TX=GPIO4 (TX 未使用, 单向接收 OpenMV 数据)
 #define VIS_UART Serial1
 
 void VisionBridge::begin() {
@@ -21,7 +20,9 @@ void VisionBridge::handle() {
     while (VIS_UART.available()) {
         char c = VIS_UART.read();
         if (c == '\n' || c == '\r') {
-            if (rxLen_ >= 4 && rxBuf_[0] == 'V' && rxBuf_[1] == 'I' && rxBuf_[2] == 'S' && rxBuf_[3] == ':') {
+            // 检测 "VIS:" 帧头
+            if (rxLen_ >= 4 && rxBuf_[0] == 'V' && rxBuf_[1] == 'I'
+                && rxBuf_[2] == 'S' && rxBuf_[3] == ':') {
                 rxBuf_[rxLen_] = '\0';
                 if (parseVisionPacket(rxBuf_, rxLen_)) {
                     lastUpdateMs_ = millis();
@@ -36,58 +37,37 @@ void VisionBridge::handle() {
 }
 
 bool VisionBridge::parseVisionPacket(const char* buf, size_t /*len*/) {
+    // XOR checksum 验证（含 '*' 则校验，无 '*' 向后兼容）
     if (!verifyChecksum(buf, 4)) {
         return false;
     }
 
-    const char* star = strchr(buf, '*');
-    int starPos = star ? (star - buf) : -1;
+    const char* p = buf + 4;  // 跳过 "VIS:" 前缀
+    char* end = nullptr;
 
-    // Find all 7 comma positions
-    const char* p[7];
-    p[0] = strchr(buf + 4, ',');
-    for (int i = 1; i < 7; i++) {
-        if (!p[i-1]) return false;
-        p[i] = strchr(p[i-1] + 1, ',');
-    }
-    if (!p[6]) return false;
+    // 使用 strtol/strtof 的 endptr 参数逐字段解析，避免 const_cast<char*> 修改 buffer
+    // Parse each comma-separated field using strtol/strtof with endptr
 
-    // Extract integers by null-terminating temporarily
-    char orig;
-    int pos[7];
-    for (int i = 0; i < 7; i++) pos[i] = p[i] - buf;
+    cx_    = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
+    cy_    = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
+    w_     = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
+    h_     = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
+    feetY_  = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
+    conf_  = strtof(p, &end);           if (end == p || *end != ',') return false;  p = end + 1;
 
-    orig = buf[pos[0]]; const_cast<char*>(buf)[pos[0]] = '\0';
-    cx_ = atoi(buf + 4); const_cast<char*>(buf)[pos[0]] = orig;
+    // 提取 type 字符串 ("PERSON" 或 "NONE")，直到下一个 ',' 或 '*'
+    const char* typeEnd = strpbrk(p, ",*");
+    if (!typeEnd) return false;
+    size_t tLen = typeEnd - p;
+    if (tLen >= sizeof(type_)) tLen = sizeof(type_) - 1;
+    memcpy(type_, p, tLen);
+    type_[tLen] = '\0';
+    p = typeEnd;
+    if (*p == ',') p++;
 
-    orig = buf[pos[1]]; const_cast<char*>(buf)[pos[1]] = '\0';
-    cy_ = atoi(buf + pos[0] + 1); const_cast<char*>(buf)[pos[1]] = orig;
-
-    orig = buf[pos[2]]; const_cast<char*>(buf)[pos[2]] = '\0';
-    w_ = atoi(buf + pos[1] + 1); const_cast<char*>(buf)[pos[2]] = orig;
-
-    orig = buf[pos[3]]; const_cast<char*>(buf)[pos[3]] = '\0';
-    h_ = atoi(buf + pos[2] + 1); const_cast<char*>(buf)[pos[3]] = orig;
-
-    orig = buf[pos[4]]; const_cast<char*>(buf)[pos[4]] = '\0';
-    feetY_ = atoi(buf + pos[3] + 1); const_cast<char*>(buf)[pos[4]] = orig;
-
-    orig = buf[pos[5]]; const_cast<char*>(buf)[pos[5]] = '\0';
-    conf_ = atof(buf + pos[4] + 1); const_cast<char*>(buf)[pos[5]] = orig;
-
-    orig = buf[pos[6]]; const_cast<char*>(buf)[pos[6]] = '\0';
-    safeStrCopy(type_, buf + pos[5] + 1, sizeof(type_));
-    const_cast<char*>(buf)[pos[6]] = orig;
-
-    // Extract distScore
-    if (starPos > pos[6] + 1) {
-        orig = buf[starPos]; const_cast<char*>(buf)[starPos] = '\0';
-        distScore_ = atof(buf + pos[6] + 1);
-        const_cast<char*>(buf)[starPos] = orig;
-    } else {
-        const char* nextComma = strchr(buf + pos[6] + 1, ',');
-        distScore_ = nextComma ? atof(nextComma + 1) : atof(buf + pos[6] + 1);
-    }
+    // 解析 distScore (最后的数值字段，之后可能是 '*' checksum 或 '\0')
+    distScore_ = strtof(p, &end);
+    // end 指向 '*' 或 '\0' — 两者均可接受
 
     return true;
 }

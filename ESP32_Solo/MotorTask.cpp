@@ -1,17 +1,15 @@
 #include "MotorTask.h"
-#include "ProtocolUtils.h"
 #include <esp_task_wdt.h>
 
 void MotorTask::begin(MotorDriver* motor, UltrasonicSensors* ultrasonic,
-                       DataAggregator* aggregator, SemaphoreHandle_t mutex,
-                       QueueHandle_t cmdQueue) {
+                       DataAggregator* aggregator, QueueHandle_t cmdQueue) {
     motor_      = motor;
     ultrasonic_ = ultrasonic;
     aggregator_ = aggregator;
-    mutex_      = mutex;
     cmdQueue_   = cmdQueue;
 }
 
+// FreeRTOS task 入口，每 5ms 循环一次
 void MotorTask::taskFunc(void* param) {
     auto* self = static_cast<MotorTask*>(param);
     esp_task_wdt_add(NULL);
@@ -25,12 +23,12 @@ void MotorTask::taskFunc(void* param) {
 void MotorTask::run() {
     const unsigned long now = millis();
 
-    // Step 1: update ultrasonic readings
+    // Step 1: 超声波测距更新
     ultrasonic_->update();
     UltrasonicReadings us = ultrasonic_->readings();
     uint8_t blockedSide = ultrasonic_->obstacleSide();
 
-    // Step 2: non-blocking read from command queue
+    // Step 2: 非阻塞读取 MotorCmd queue
     MotorCmd cmd = {CarCmd::STOP, 0};
     bool hasCmd = (xQueueReceive(cmdQueue_, &cmd, 0) == pdPASS);
     if (hasCmd) {
@@ -38,12 +36,12 @@ void MotorTask::run() {
         commandWatchdogActive_ = true;
     }
 
-    // Step 3: danger zone (< 20cm) forces immediate stop
+    // Step 3: 危险区 (<20cm) → 强制 STOP
     if (checkDanger(us)) {
         return;
     }
 
-    // Step 4: before command link is alive, stay stopped
+    // Step 4: 命令链路未建立前保持 STOP
     if (!commandWatchdogActive_) {
         motor_->stop();
         currentAction_ = "STOP";
@@ -52,12 +50,12 @@ void MotorTask::run() {
         return;
     }
 
-    // Step 5: command link watchdog — stop if no command for 500ms
+    // Step 5: 命令超时看门狗 (>500ms 无命令 → STOP)
     if (checkCommandTimeout(now)) {
         return;
     }
 
-    // Step 6: warning zone (20-40cm) — avoidance takes priority over vision commands
+    // Step 6: 警告区 (20-40cm) — 避障优先于视觉命令
     if (blockedSide != US_SIDE_NONE) {
         if (!avoidanceActive_) {
             avoidanceActive_ = true;
@@ -68,6 +66,7 @@ void MotorTask::run() {
         if (!stillBlocked) {
             avoidanceActive_ = false;
         } else if ((now - avoidanceStartMs_) > AVOIDANCE_TIMEOUT_MS) {
+            // 避障超时 → 后退策略
             doAvoidanceReverse();
             return;
         } else {
@@ -78,12 +77,12 @@ void MotorTask::run() {
         avoidanceActive_ = false;
     }
 
-    // Step 7: execute vision command (from FollowLogic via queue)
+    // Step 7: 正常执行 FollowLogic 下发的 MotorCmd
     if (hasCmd) {
         executeMotorCmd(cmd);
     }
 
-    // Step 8: update aggregator
+    // Step 8: 更新 aggregator（供 Web Dashboard 轮询）
     reportState();
 }
 
@@ -114,6 +113,7 @@ bool MotorTask::checkCommandTimeout(unsigned long now) {
     return false;
 }
 
+// 检查障碍物是否仍然存在（防止单次误检提前退出避障）
 bool MotorTask::checkStillBlocked(const UltrasonicReadings& us, uint8_t blockedSide) {
     if (blockedSide == US_SIDE_LEFT  && us.leftCm  > OBSTACLE_WARN_CM) return false;
     if (blockedSide == US_SIDE_RIGHT && us.rightCm > OBSTACLE_WARN_CM) return false;
@@ -121,18 +121,22 @@ bool MotorTask::checkStillBlocked(const UltrasonicReadings& us, uint8_t blockedS
     return true;
 }
 
+// 避障转向：远离障碍物一侧减速，另一侧保持速度
 void MotorTask::doAvoidance(uint8_t blockedSide) {
     if (blockedSide == US_SIDE_LEFT) {
+        // 左侧有障碍 → 向右转
         motor_->drive(AVOIDANCE_SPEED, AVOIDANCE_SPEED / 3);
         currentAction_ = "AVD_RGT";
         leftPwm_ = AVOIDANCE_SPEED;
         rightPwm_ = AVOIDANCE_SPEED / 3;
     } else if (blockedSide == US_SIDE_RIGHT) {
+        // 右侧有障碍 → 向左转
         motor_->drive(AVOIDANCE_SPEED / 3, AVOIDANCE_SPEED);
         currentAction_ = "AVD_LFT";
         leftPwm_ = AVOIDANCE_SPEED / 3;
         rightPwm_ = AVOIDANCE_SPEED;
     } else {
+        // 双侧有障碍 → 后退
         motor_->reverse(AVOIDANCE_SPEED);
         currentAction_ = "AVD_REV";
         leftPwm_ = rightPwm_ = AVOIDANCE_SPEED;
@@ -140,6 +144,7 @@ void MotorTask::doAvoidance(uint8_t blockedSide) {
     reportState();
 }
 
+// 避障超时 → 后退策略
 void MotorTask::doAvoidanceReverse() {
     motor_->reverse(AVOIDANCE_SPEED / 2);
     currentAction_ = "AVD_REV_T";
@@ -148,9 +153,9 @@ void MotorTask::doAvoidanceReverse() {
 }
 
 void MotorTask::reportState() {
-    if (lockAggregator(pdMS_TO_TICKS(5))) {
+    if (aggregator_->lock(pdMS_TO_TICKS(5))) {
         aggregator_->updateCar(buildCarState());
-        unlockAggregator();
+        aggregator_->unlock();
     }
 }
 
@@ -205,14 +210,4 @@ CarState MotorTask::buildCarState() const {
     safeStrCopy(s.action, currentAction_, sizeof(s.action));
     s.timestamp = millis();
     return s;
-}
-
-bool MotorTask::lockAggregator(TickType_t waitTicks) {
-    if (mutex_ == nullptr) return true;
-    return xSemaphoreTake(mutex_, waitTicks) == pdTRUE;
-}
-
-void MotorTask::unlockAggregator() {
-    if (mutex_ == nullptr) return;
-    xSemaphoreGive(mutex_);
 }
