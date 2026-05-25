@@ -80,7 +80,7 @@ UART3.write() ──────────────►   ▼               
 - [ ] 在 OpenMV Cam 上运行当前 `OpenMV/main.py`
 - [ ] 确认 YOLO person detection 正常输出
 - [ ] VL53L1X 测距扩展板安装 + I2C 扫描确认设备在线 (addr 0x29)
-- [ ] 运行 `vl53l1x` 示例代码验证 ToF 测距输出 (40-4000mm)
+- [ ] 运行 `OpenMV/test_vl53l1x.py` 验证：I2C 总线扫描 → 芯片 ID → 连续测距 (100 样本) → 统计分析
 - [ ] 用 USB 串口监视 VIS 帧格式正确
 - [ ] 记录当前帧率和检测延迟
 
