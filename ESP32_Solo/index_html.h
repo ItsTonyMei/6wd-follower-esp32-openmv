@@ -1,6 +1,6 @@
 // ============================================================================
-// 6WD Follower — Web Dashboard (embedded SPA)
-// 实时显示: motor PWM / ultrasonic / vision detection / distScore
+// 履带车视觉跟随系统 — Web Dashboard (embedded SPA)
+// 实时显示: motor PWM / vision detection / distScore / tofDistance / STM32 遥测
 // ============================================================================
 
 const char INDEX_HTML[] PROGMEM = R"rawliteral(
@@ -221,29 +221,17 @@ function drawDetection(vis) {
 }
 
 // ============================================================================
-// Draw ultrasonic bars on left/right edges
+// ToF distance indicator (VL53L1X, replaced ultrasonic)
 // ============================================================================
-function drawUltrasonic(car) {
-  if (!car.v) return;
-
-  // Left ultrasonic bar
-  const ul = car.ul;
-  const ulPct = Math.min(100, Math.max(0, (ul / 100.0) * 100));
-  ctx.fillStyle = distColor(ul);
-  ctx.fillRect(5, 10, 6, ulPct * 2.2);
-  ctx.fillStyle = '#888';
-  ctx.font = '8px monospace';
-  ctx.textAlign = 'left';
-  ctx.fillText('L:' + ul + 'cm', 2, 230);
-
-  // Right ultrasonic bar
-  const ur = car.ur;
-  const urPct = Math.min(100, Math.max(0, (ur / 100.0) * 100));
-  ctx.fillStyle = distColor(ur);
-  ctx.fillRect(W-11, 10, 6, urPct * 2.2);
-  ctx.fillStyle = '#888';
+function drawTofDistance(vis) {
+  if (!vis.v) return;
+  const tof = vis.tof || 0;
+  if (tof <= 0) return;
+  const tofM = (tof / 1000).toFixed(2);
+  ctx.fillStyle = '#0ff';
+  ctx.font = '9px monospace';
   ctx.textAlign = 'right';
-  ctx.fillText('R:' + ur + 'cm', W-2, 230);
+  ctx.fillText('ToF: ' + tofM + 'm', W - 4, 20);
 }
 
 // ============================================================================
@@ -254,7 +242,7 @@ function drawTopview(car, vis) {
   drawGrid();
   drawCar();
   drawDetection(vis);
-  drawUltrasonic(car);
+  drawTofDistance(vis);
 }
 
 // ============================================================================
@@ -319,12 +307,13 @@ function updateUI(data) {
   if (car.v) {
     document.getElementById('ul-val').textContent = car.ul + 'cm';
     document.getElementById('ur-val').textContent = car.ur + 'cm';
-    const ulBar = document.getElementById('ul-bar');
-    const urBar = document.getElementById('ur-bar');
-    ulBar.style.width = Math.min(100, car.ul / 100 * 100) + '%';
-    urBar.style.width = Math.min(100, car.ur / 100 * 100) + '%';
-    ulBar.style.background = distColor(car.ul);
-    urBar.style.background = distColor(car.ur);
+    // ToF distance display (VL53L1X, mm)
+    const tofEl = document.getElementById('tof-val');
+    if (tofEl && vis.tof > 0) {
+      tofEl.textContent = (vis.tof / 1000).toFixed(2) + 'm';
+    } else if (tofEl) {
+      tofEl.textContent = '--';
+    }
   }
 
   // Motors

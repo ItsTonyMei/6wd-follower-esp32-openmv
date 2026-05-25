@@ -46,9 +46,9 @@ String DataAggregator::getJson() {
     char buf[512];
     int len = snprintf(buf, sizeof(buf),
         "{"
-        "\"car\":{\"v\":%d,\"l\":%d,\"r\":%d,\"ul\":%d,\"ur\":%d,\"act\":\"%s\",\"ts\":%lu},"
+        "\"car\":{\"v\":%d,\"l\":%d,\"r\":%d,\"act\":\"%s\",\"ts\":%lu},"
         "\"vis\":{\"v\":%d,\"hp\":%d,\"cx\":%d,\"cy\":%d,\"w\":%d,\"h\":%d,"
-        "\"conf\":%.2f,\"type\":\"%s\",\"ds\":%.2f,\"fy\":%d,\"ts\":%lu},"
+        "\"conf\":%.2f,\"type\":\"%s\",\"ds\":%.2f,\"tof\":%d,\"fy\":%d,\"ts\":%lu},"
         "\"snap\":0,"
         "\"cfg\":{\"ds_stop\":%.2f,\"ds_slow\":%.2f,\"ds_far\":%.2f}"
         "}",
@@ -56,8 +56,6 @@ String DataAggregator::getJson() {
         carState_.valid ? 1 : 0,
         carState_.leftPwm,
         carState_.rightPwm,
-        carState_.leftUltrasonic,
-        carState_.rightUltrasonic,
         carState_.action,
         carState_.timestamp,
         // vis
@@ -70,6 +68,7 @@ String DataAggregator::getJson() {
         visState_.confidence,
         visState_.type,
         visState_.distScore,
+        visState_.tofDistance,
         visState_.feetY,
         visState_.timestamp,
         // cfg (thresholds from FollowLogic, 前端颜色映射需与此一致)

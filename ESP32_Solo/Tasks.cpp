@@ -44,6 +44,7 @@ void visionTaskFunc(void* param) {
                 vs.type[0] = '\0';
                 safeStrCopy(vs.type, visionBridge.type(), sizeof(vs.type));
                 vs.distScore = visionBridge.distScore();
+                vs.tofDistance = visionBridge.tofDistance();
                 vs.feetY = visionBridge.feetY();
                 vs.timestamp = millis();
                 aggregator.updateVis(vs);

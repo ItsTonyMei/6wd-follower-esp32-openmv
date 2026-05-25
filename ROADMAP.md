@@ -5,7 +5,8 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                     L1: 感知层 (OpenMV)                       │
-│   YOLO person detection → 多特征融合距离估计 → VIS/UART → ESP32 │
+│   YOLO person detection + VL53L1X ToF 激光测距 → 视觉+ToF 融合  │
+│   距离估计 → VIS/UART → ESP32                                  │
 ├──────────────────────────────────────────────────────────────┤
 │                     L2: 决策层 (ESP32)                        │
 │   FollowLogic + 行为仲裁 + WiFi Dashboard + 远程调参          │
@@ -35,17 +36,16 @@ OpenMV                        ESP32                          STM32
 ───────                      ───────                        ───────
 YOLO检测                      VisionBridge.parse()           UART1 RX中断
   │                             │                              │
-  ▼                             ▼                              ▼
-距离估计(0-1)                 VisState更新                   MotorCmd解析
-  │                             │                           (CRC8校验)
-  ▼                             ▼                              │
-VIS帧组装                     FollowLogic.update()             ▼
-  │                           · 视觉距离保持                  电机PWM输出
-  ▼                           · 超声波避障                     │
-UART3.write() ──────────────► · 行为仲裁                      ▼
-                               │                           编码器ADC采集
-                               ▼                              │
-                             MotorCmd + CRC8 ──────────────►  ▼
+  ├── VL53L1X ToF (I2C)         ▼                              ▼
+  │     └→ 距离(mm)           VisState更新                   MotorCmd解析
+  ▼                             │                           (CRC8校验)
+视觉+ToF融合距离               ▼                              │
+  │                           FollowLogic.update()             ▼
+  ▼                             · 距离保持 (distScore)        电机PWM输出
+VIS帧组装                       · 行为仲裁                    │
+  │                             │                              ▼
+UART3.write() ──────────────►   ▼                           编码器ADC采集
+                               MotorCmd + CRC8 ──────────────► ▼
                                                             遥测帧组装
                                ◄──────────────────────  (编码器/电流/错误)
                                │
@@ -73,12 +73,14 @@ UART3.write() ──────────────► · 行为仲裁     
 - [ ] 标记 FollowLogic → 保留在 ESP32，需重构为差速转向
 - [ ] 标记 VisionBridge → 保留，无需改动
 - [ ] 标记 DashboardServer → 保留，扩展遥测字段
-- [ ] 标记 DataAggregator → 保留，新增 STM32 遥测字段
-- [ ] 移除超声波避障代码（履带车不装 HC-SR04）
+- [ ] 标记 DataAggregator → 保留，新增 STM32 遥测字段 + VisState tofDistance
+- [ ] 移除超声波避障代码（已由 VL53L1X ToF 测距扩展板替代，距离数据从 OpenMV VIS 帧统一传入）
 
 ### 0.3 OpenMV 现有代码验证
 - [ ] 在 OpenMV Cam 上运行当前 `OpenMV/main.py`
 - [ ] 确认 YOLO person detection 正常输出
+- [ ] VL53L1X 测距扩展板安装 + I2C 扫描确认设备在线 (addr 0x29)
+- [ ] 运行 `vl53l1x` 示例代码验证 ToF 测距输出 (40-4000mm)
 - [ ] 用 USB 串口监视 VIS 帧格式正确
 - [ ] 记录当前帧率和检测延迟
 
@@ -88,6 +90,7 @@ UART3.write() ──────────────► · 行为仲裁     
 | STM32F103 板 | 1 | — | 实时控制主板 | 已有 |
 | ESP32 板 (UniBoard) | 1 | — | 决策 + WiFi | 已有 |
 | OpenMV Cam | 1 | H7+ / N6 | 视觉感知 | 已有 |
+| OpenMV 测距扩展板 (VL53L1X) | 1 | ToF, 40-4000mm, ±1mm, 50Hz, I2C | 激光测距替代超声波 | **待采购** (¥136 星瞳官方) |
 | 履带底盘 (含电机) | 1 | 金属履带, 载重 100kg | 执行平台 | **已到货** |
 | 防水 48V 双向双路差速有刷电调 | 1 | 48V 45A 500W ×2ch | 左右履带独立驱动 | **已确认待装** |
 | 防水 48V→5V 10A 降压模块 | 1 | 防水, 10A | 控制电路供电 | **已确认待装** |
@@ -295,10 +298,11 @@ ErrCode 错误码:
 - [ ] `MotorTask.cpp` → 删除 PWM 直驱，改为 UART MotorCmd 发送
 - [ ] `DataAggregator.h` → 新增 STM32 遥测字段
 - [ ] `Tasks.cpp` → 调整任务结构适应新架构
-- [ ] 保留但可能移除超声波避障（履带车宽体和重量下超声波实用性存疑，后续评估）
+- [ ] `DataAggregator.h` → 移除 CarState 超声波字段，VisState 新增 tofDistance (mm)
+- [ ] 超声波避障代码全部移除（已由 VL53L1X ToF 替代，距离数据由 OpenMV 统一提供）
 
 ### 4.2 FollowLogic 重构: 差速转向
-- [ ] 输入：VisState（cx偏航, distScore距离）, RC 通道值
+- [ ] 输入：VisState（cx偏航, distScore融合距离, tofDistance原始mm）, RC 通道值
 - [ ] 输出：MotorCmd（CarCmd + pwm）
 - [ ] 转向控制：`pwm_diff = Kp * (cx - FRAME_CX) / FRAME_CX * MAX_PWM`
 - [ ] 差速输出：`pwm_L = base_pwm - pwm_diff`, `pwm_R = base_pwm + pwm_diff`
@@ -323,17 +327,22 @@ ErrCode 错误码:
 ```
 
 ### 4.5 距离保持逻辑
-| distScore 范围 | 行为 | 命令 |
-|----------------|------|------|
-| < 0.25 (太远) | 全速前进追赶 | FWD, pwm=MAX |
-| 0.25-0.45 (较远) | 中速跟进 | FWD, pwm=120 |
-| 0.45-0.60 (合适) | 微调保持 | FWD/STOP 交替 |
-| 0.60-0.80 (较近) | 慢速后退 | REV, pwm=80 |
-| > 0.80 (太近) | 全速后退 | REV, pwm=MAX |
+
+distScore 由 OpenMV 端融合计算：视觉特征 (area_ratio + feetY) + VL53L1X ToF 距离 (mm)。
+ESP32 端仅消费最终 distScore，阈值映射如下：
+
+| distScore 范围 | ToF 参考距离 | 行为 | 命令 |
+|----------------|-------------|------|------|
+| < 0.25 (太远) | >3m / 无效 | 全速前进追赶 | FWD, pwm=MAX |
+| 0.25-0.45 (较远) | ~1.5-3m | 中速跟进 | FWD, pwm=120 |
+| 0.45-0.60 (合适) | ~1-1.5m | 微调保持 | FWD/STOP 交替 |
+| 0.60-0.80 (较近) | ~0.5-1m | 慢速后退 | REV, pwm=80 |
+| > 0.80 (太近) | <0.5m | 全速后退 | REV, pwm=MAX |
 
 滞后设计（防振荡）：
 - 进入"合适"区后需偏离 ±0.05 才触发移动
 - 状态转换需维持 3 帧（~600ms）确认
+- ToF 有效时 (40-4000mm) distScore 以 ToF 为主要权重；ToF 无效时降级为纯视觉估计
 
 ---
 
@@ -344,12 +353,12 @@ ErrCode 错误码:
 ### 5.1 WiFi AP Dashboard 完善
 - [ ] 现有 `DashboardServer` 扩展遥测显示
 - [ ] 页面布局：左侧状态面板 + 右侧实时数据
-- [ ] 显示：模式、distScore、编码器速度、电流、错误码、RSSI
+- [ ] 显示：模式、distScore、tofDistance (mm)、编码器速度、电流、错误码、RSSI
 - [ ] 手机端适配（viewport meta, 大字体）
 
 ### 5.2 WebSocket 实时遥测
 - [ ] 每 100ms 推送 JSON 数据包
-- [ ] JSON 字段：`{ts, mode, carCmd, pwm, encL, encR, curL, curR, distScore, cx, conf, flags, errCode, uartErrors}`
+- [ ] JSON 字段：`{ts, mode, carCmd, pwm, encL, encR, curL, curR, distScore, tofDist, cx, conf, flags, errCode, uartErrors}`
 - [ ] Dashboard 用 Chart.js 画电流/速度时序图
 
 ### 5.3 在线参数调整
@@ -366,25 +375,53 @@ ErrCode 错误码:
 
 ---
 
-## Phase 6 — OpenMV 视觉处理 (预计 2-3 天)
+## Phase 6 — OpenMV 视觉 + ToF 测距 (预计 3-4 天)
 
-**目标**: OpenMV 视觉管线针对履带车场景校准完成，输出可靠的距离估计。
+**目标**: OpenMV 视觉管线 + VL53L1X ToF 激光测距针对履带车场景校准完成，输出融合后的可靠距离估计。
 
-### 6.1 Person Detection 验证
+### 6.1 VL53L1X ToF 测距集成
+- [ ] 安装 OpenMV 测距扩展板 (星瞳科技, ¥136, VL53L1X) 到 OpenMV Shield 接口
+- [ ] I2C 扫描确认 VL53L1X 在线 (addr 0x29), 使用 `vl53l1x` 内置模块
+- [ ] 验证 ToF 测距范围 40-4000mm, 精度 ±1mm, 最大 50Hz 读取率
+- [ ] 测试不同光照条件 (室内/户外/逆光) 下 ToF 测距稳定性
+- [ ] 确认与 UART3 (P4 TX) 无引脚冲突 — 测距扩展板使用独立 I2C Shield 总线
+- [ ] N6 兼容性确认: 如 Shield 接口不同, 使用 I2C(1) 飞线连接 (P7 SCL / P8 SDA)
+
+### 6.2 Person Detection 验证
 - [ ] 履带车低视角场景（离地约 50-80cm）测试
 - [ ] 不同距离（1m/2m/3m/5m）检测率统计
 - [ ] 若检测率 < 80%（3m内）→ 尝试降低 DETECTION_THRESHOLD 或换更大的 YOLO 模型
 
-### 6.2 VIS 协议验证
-- [ ] OpenMV UART3 → ESP32 UART1 连接
-- [ ] 用 USB 串口同时监听确认帧内容
-- [ ] XOR checksum 验证通过率统计
+### 6.3 VIS 协议扩展 (新增 tofDistance 字段)
+- [ ] VIS 帧格式扩展: 在数据串末尾增加 ToF 距离字段 `tofDist`
+  - 有人: `cx,cy,w,h,feetY,conf,PERSON,distScore,tofDist`
+  - 无人: `0,0,0,0,0,0.00,NONE,0.00,0`
+- [ ] XOR checksum 覆盖新增字段
+- [ ] ESP32 VisionBridge 同步更新解析逻辑
+- [ ] 用 USB 串口同时监听确认帧内容正确
 
-### 6.3 距离估计算法校准
-- [ ] 在履带车上实际测量不同距离下的 area_ratio 和 feetY 值
-- [ ] 重新标定 AREA_CLOSE / AREA_FAR / AREA_VERY_CLOSE 阈值
-- [ ] 验证 distScore 与真实距离的单调性
-- [ ] 微调各模式下的融合权重
+### 6.4 距离融合算法设计与校准
+
+**融合策略**:
+```
+ToF 有效 (40-4000mm):
+  tof_score = 1.0 - (tofDist - 400) / (4000 - 400)  // 映射到 0-1 (越远越小)
+  tof_score = clamp(tof_score, 0.0, 1.0)
+  distScore = tof_score * 0.7 + visual_score * 0.3     // ToF 主, 视觉辅
+
+ToF 无效 (out of range / sensor error):
+  distScore = visual_score                               // 纯视觉降级
+  (沿用现有 AREA_CLOSE/AREA_FAR 多特征融合逻辑)
+```
+
+- [ ] 在履带车上实际测量不同距离 (0.5m/1m/1.5m/2m/3m/4m) 下的 ToF 读数
+- [ ] 标定 ToF 安装角度和视野遮挡情况（是否被车体遮挡近距离地面）
+- [ ] 验证 ToF 读数与真实距离的线性度
+- [ ] 重新标定视觉侧 AREA_CLOSE / AREA_FAR / AREA_VERY_CLOSE 阈值 (履带车视角)
+- [ ] 确定 ToF 有效范围 (40-4000mm) 与视觉有效范围的重叠区间
+- [ ] 联调融合权重: 调整 ToF vs 视觉的权重分配，测试典型跟随场景
+- [ ] 处理 ToF 跳变/噪声: 中值滤波 (3 样本滑动窗口) 或低通滤波
+- [ ] 40mm 盲区 (极近距离) 处理: 仅依赖视觉 area_ratio + feetY 判断 STOP
 
 ---
 
@@ -485,7 +522,7 @@ Phase 0 (初始化)
 |--------|-----------|-----------|
 | M1: 车能遥控开起来 | 2 | 遥控器控制履带车前进/后退/转向 |
 | M2: 安全层完整 | 1+3 | 所有 5 条安全链路可独立关断动力 |
-| M3: 能视觉跟随 | 4+6 | 人走车走，人停车停，人退车退 |
+| M3: 能视觉跟随 | 4+6 | 人走车走，人停车停，人退车退（视觉+ToF融合距离） |
 | M4: Dashboard 可用 | 5 | 手机浏览器看所有状态、在线调参 |
 | M5: 全系统可靠 | 7 | 安全测试全通过，端到端 <300ms |
 | M6: 可以出门 | 8 | 户外各种地面稳定跟随 |

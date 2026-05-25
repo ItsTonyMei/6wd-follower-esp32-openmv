@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + 距离估计; **ESP32** 负责 FollowLogic 决策 + WiFi Dashboard + ELRS/CRSF 遥控接收; **STM32F103** 负责硬实时电机控制 + 安全保护。OpenMV → ESP32 通过 SoftSerial (VIS 协议), ESP32 ↔ STM32 通过 UART2 (MotorCmd + 遥测协议), ELRS 接收机 → ESP32 通过 UART1 (CRSF 协议 420k baud)。
+金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + VL53L1X ToF 激光测距 + 视觉距离融合; **ESP32** 负责 FollowLogic 决策 + WiFi Dashboard + ELRS/CRSF 遥控接收; **STM32F103** 负责硬实时电机控制 + 安全保护。OpenMV → ESP32 通过 SoftSerial (VIS 协议), ESP32 ↔ STM32 通过 UART2 (MotorCmd + 遥测协议), ELRS 接收机 → ESP32 通过 UART1 (CRSF 协议 420k baud)。
 
 ## Hardware Platform
 
@@ -14,11 +14,12 @@
 ### 控制板
 | 板卡 | 角色 | 关键外设 |
 |------|------|---------|
-| OpenMV Cam (H7+/N6) | L1 感知层 | Camera + YOLO LC + UART3 TX |
+| OpenMV Cam (H7+/N6) | L1 感知层 | Camera + YOLO LC + VL53L1X ToF 测距扩展板 (I2C) + UART3 TX |
 | ESP32 | L2 决策层 | WiFi AP + ELRS/CRSF 遥控接收 (UART1) + STM32 通信 (UART2) |
 | STM32F103 | L3 执行安全层 | 2ch RC PWM 输出 → 电调 + 急停 GPIO + ADC 电流采样 |
 
 ### 通信链路
+- VL53L1X ToF → OpenMV: I2C Shield 接口 (addr 0x29), 40-4000mm, ±1mm, max 50Hz
 - OpenMV → ESP32: EspSoftwareSerial GPIO18 RX, 115200, VIS ASCII 协议 (XOR checksum)
 - ESP32 → STM32: UART2 TX=GPIO17, 115200, 4-byte 二进制 MotorCmd 协议 (CRC8)
 - STM32 → ESP32: UART2 RX=GPIO16, 115200, 10-byte 遥测帧 (编码器/电流/状态)
@@ -35,7 +36,7 @@
 
 ## Language Convention
 
-**注释和文档使用中文 + 英文专业名词。** 技术术语 (YOLO, PWM, FreeRTOS, UART, GPIO, CRSF, ELRS, CAN, CRC, ESC, BMS, model, frame, packet 等) 保持英文；解释性文字、架构说明、注意事项使用中文。
+**注释和文档使用中文 + 英文专业名词。** 技术术语 (YOLO, PWM, FreeRTOS, UART, GPIO, CRSF, ELRS, CAN, CRC, ESC, BMS, ToF, VL53L1X, I2C, model, frame, packet 等) 保持英文；解释性文字、架构说明、注意事项使用中文。
 
 ## Build System
 

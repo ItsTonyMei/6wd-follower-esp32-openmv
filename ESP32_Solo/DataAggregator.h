@@ -11,9 +11,7 @@ struct CarState {
     bool valid;
     int leftPwm;            // 左轮 PWM (0-255)
     int rightPwm;           // 右轮 PWM (0-255)
-    int leftUltrasonic;     // 左超声波距离 (cm)
-    int rightUltrasonic;    // 右超声波距离 (cm)
-    char action[8];         // 当前动作: STOP / FWD / LFT / RGT / AVD_*
+    char action[8];         // 当前动作: STOP / FWD / LFT / RGT
     unsigned long timestamp;
 };
 
@@ -29,7 +27,8 @@ struct VisState {
     int h;                  // 检测框高度
     float confidence;       // YOLO confidence (0.0-1.0)
     char type[32];          // 检测类型: "PERSON" / "NONE"
-    float distScore;        // 多特征融合距离分 (0.0-1.0, 越大越近)
+    float distScore;        // 融合距离分: 视觉特征 + VL53L1X ToF (0.0-1.0, 越大越近)
+    int tofDistance;        // VL53L1X ToF 原始距离 (mm), 40-4000, 0=无效
     int feetY;              // 脚部 Y 坐标 (legacy fallback)
     bool hasPerson;         // 是否检测到人
     unsigned long timestamp;
@@ -58,8 +57,8 @@ public:
     String getJson();
 
 private:
-    CarState carState_ = {false, 0, 0, 0, 0, "", 0};
-    VisState visState_ = {false, 0, 0, 0, 0, 0.0f, "", 0.0f, 0, false, 0};
+    CarState carState_ = {false, 0, 0, "", 0};
+    VisState visState_ = {false, 0, 0, 0, 0, 0.0f, "", 0.0f, 0, 0, false, 0};
 
     SemaphoreHandle_t mutex_ = nullptr;
 

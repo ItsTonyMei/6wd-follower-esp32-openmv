@@ -8,7 +8,8 @@
 //
 // 架构: OpenMV (L1感知) → ESP32 (L2决策) → STM32 (L3执行+安全)
 // 电机 PWM 直驱已迁移至 STM32，ESP32 通过 UART2 MotorCmd 间接控制。
-// 超声波 HC-SR04 已移除（履带车不适用）。
+// 超声波 HC-SR04 已全部移除，距离测量由 OpenMV VL53L1X ToF 测距扩展板 (I2C) 负责。
+// ToF 距离数据 (mm) 通过 VIS 帧 distScore 字段融合传入 ESP32。
 //
 // 供电: 48V 89Ah 锂电池 → 48V→5V 10A 防水降压 → ESP32 (5V USB)
 
@@ -77,7 +78,9 @@ constexpr uint32_t TASK_STACK_SIZE = 4096;
 constexpr unsigned long VISION_TIMEOUT_MS = 700;
 
 // ─── 距离保持阈值 (distScore 0.0-1.0) ───
-// 基于 OpenMV 多特征融合距离估计输出，在履带车上需重新标定（Phase 6.3）
+// distScore 由 OpenMV 端视觉特征 (area_ratio, feetY) + VL53L1X ToF 距离 (mm) 融合计算
+// ESP32 FollowLogic 仅使用最终 distScore 做决策，不直接感知 ToF 原始数据
+// 阈值在履带车上需重新标定（Phase 6.4）
 constexpr float DIST_FAR         = 0.25f;  // < this → 全速追赶
 constexpr float DIST_APPROACHING = 0.45f;  // < this → 中速跟近
 constexpr float DIST_NEAR_START  = 0.60f;  // > this → 开始后退

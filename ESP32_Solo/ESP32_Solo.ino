@@ -1,7 +1,9 @@
 // ============================================================================
-// 6WD Follower — ESP32 单板控制方案 (UniBoard)
-// ESP32 统一控制：电机 PWM (LEDC)、超声波 HC-SR04 ×2、视觉跟随、WiFi Dashboard
-// OpenMV 仅负责摄像头 + YOLO person detection，通过 UART1 单向发送 VIS 数据
+// 履带车视觉跟随系统 — ESP32 L2 决策层
+// ESP32 负责: OpenMV VIS 帧解析 + FollowLogic 决策 + CRSF 遥控 + WiFi Dashboard
+// 电机控制通过 UART2 → STM32 (MotorCmd)，不再由 ESP32 直驱 PWM。
+// 超声波 HC-SR04 已移除，距离测量由 OpenMV VL53L1X ToF 测距扩展板提供。
+// TODO(Phase 4.1): 移除 UltrasonicSensors / MotorTask 超声波依赖
 // ============================================================================
 
 #include <WiFi.h>
@@ -83,14 +85,11 @@ void setup() {
     motorTask.begin(&motor, &ultrasonic, &aggregator, motorCmdQueue);
 
     Serial.println();
-    Serial.println("=== 6WD Follower — ESP32 UniBoard ===");
-    Serial.println("OpenMV P4(TX)  -> GPIO15 (UART1 RX)");
-    Serial.println("RZ7886 A-1     <- GPIO25 (LEDC PWM)");
-    Serial.println("RZ7886 A-2     <- GPIO26 (LEDC PWM)");
-    Serial.println("RZ7886 B-1     <- GPIO27 (LEDC PWM)");
-    Serial.println("RZ7886 B-2     <- GPIO19 (LEDC PWM)");
-    Serial.println("HC-SR04 L      -> GPIO32/34");
-    Serial.println("HC-SR04 R      -> GPIO33/35");
+    Serial.println("=== Tracked Vehicle Follower — ESP32 L2 ===");
+    Serial.println("OpenMV UART3 TX → SoftSerial GPIO18 (VIS)");
+    Serial.println("ELRS CRSF       → UART1 RX=GPIO15 TX=GPIO4");
+    Serial.println("STM32           ↔ UART2 TX=GPIO17 RX=GPIO16");
+    Serial.println("VL53L1X ToF     → OpenMV I2C Shield (距离替代超声波)");
     Serial.print("WiFi AP: ");
     Serial.print(WIFI_SSID);
     Serial.print("  IP: ");

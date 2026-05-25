@@ -65,8 +65,17 @@ bool VisionBridge::parseVisionPacket(const char* buf, size_t /*len*/) {
     p = typeEnd;
     if (*p == ',') p++;
 
-    // 解析 distScore (最后的数值字段，之后可能是 '*' checksum 或 '\0')
+    // 解析 distScore
     distScore_ = strtof(p, &end);
+
+    // 解析可选的 tofDist 字段 (VL53L1X ToF 距离 mm)
+    // 新格式: distScore,tofDist*XX → end 指向 ','
+    // 旧格式 (向后兼容): distScore*XX → end 指向 '*'
+    tofDist_ = 0;
+    if (*end == ',') {
+        p = end + 1;
+        tofDist_ = (int)strtol(p, &end, 10);
+    }
     // end 指向 '*' 或 '\0' — 两者均可接受
 
     return true;

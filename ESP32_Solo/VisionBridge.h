@@ -8,9 +8,10 @@
 // VisionBridge: OpenMV UART1 VIS 协议解析器
 // VisionBridge: parses OpenMV VIS protocol frames from UART1 (RX=GPIO15)
 //
-// 协议格式: VIS:cx,cy,w,h,feetY,conf,TYPE,distScore*checksum\r\n
-//   例: VIS:96,96,50,120,155,0.85,PERSON,0.75*122\r\n
-//   无人: VIS:0,0,0,0,0,0.00,NONE,0.00*124\r\n
+// 协议格式: VIS:cx,cy,w,h,feetY,conf,TYPE,distScore,tofDist*checksum\r\n
+//   例: VIS:96,96,50,120,155,0.85,PERSON,0.75,1234*XX\r\n
+//   无人: VIS:0,0,0,0,0,0.00,NONE,0.00,0*XX\r\n
+// tofDist: VL53L1X ToF 测距 (mm), 40-4000, 0=无效
 // ============================================================================
 class VisionBridge {
 public:
@@ -31,6 +32,7 @@ public:
     int feetY() const { return feetY_; }
     float confidence() const { return conf_; }
     float distScore() const { return distScore_; }
+    int tofDistance() const { return tofDist_; }   // VL53L1X ToF 原始距离 mm
     const char* type() const { return type_; }
 
 private:
@@ -44,6 +46,7 @@ private:
     int cx_ = 0, cy_ = 0, w_ = 0, h_ = 0, feetY_ = 0;
     float conf_ = 0.0f;
     float distScore_ = 0.0f;
+    int tofDist_ = 0;          // VL53L1X ToF 距离 (mm), 0=无效
     char type_[32] = "";
     unsigned long lastUpdateMs_ = 0;
 
