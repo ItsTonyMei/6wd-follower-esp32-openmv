@@ -1,34 +1,76 @@
-# CLAUDE.md — 6WD Follower ESP32 + OpenMV
+# CLAUDE.md — 履带车视觉跟随系统 (Tracked Vehicle Visual Follower)
 
 ## Project Overview
 
-六轮机器人小车: ESP32 (UniBoard) 负责电机 + 超声波 + Dashboard; OpenMV Cam 负责摄像头 + YOLO person detection。OpenMV 通过 UART1 单向发送 VIS 数据给 ESP32。
+金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + 距离估计; **ESP32** 负责 FollowLogic 决策 + WiFi Dashboard + ELRS/CRSF 遥控接收; **STM32F103** 负责硬实时电机控制 + 安全保护。OpenMV → ESP32 通过 SoftSerial (VIS 协议), ESP32 ↔ STM32 通过 UART2 (MotorCmd + 遥测协议), ELRS 接收机 → ESP32 通过 UART1 (CRSF 协议 420k baud)。
+
+## Hardware Platform
+
+### 动力系统
+- **电池**: 48V 89Ah 锂电池
+- **电机电调**: 防水 48V 双向双路差速有刷电机电调 (2× 48V 45A 500W)
+- **控制供电**: 48V → 5V 10A 防水降压模块 → ESP32 + STM32 + OpenMV
+
+### 控制板
+| 板卡 | 角色 | 关键外设 |
+|------|------|---------|
+| OpenMV Cam (H7+/N6) | L1 感知层 | Camera + YOLO LC + UART3 TX |
+| ESP32 | L2 决策层 | WiFi AP + ELRS/CRSF 遥控接收 (UART1) + STM32 通信 (UART2) |
+| STM32F103 | L3 执行安全层 | 2ch RC PWM 输出 → 电调 + 急停 GPIO + ADC 电流采样 |
+
+### 通信链路
+- OpenMV → ESP32: EspSoftwareSerial GPIO18 RX, 115200, VIS ASCII 协议 (XOR checksum)
+- ESP32 → STM32: UART2 TX=GPIO17, 115200, 4-byte 二进制 MotorCmd 协议 (CRC8)
+- STM32 → ESP32: UART2 RX=GPIO16, 115200, 10-byte 遥测帧 (编码器/电流/状态)
+- STM32 → 电调: 2ch 标准 RC PWM (1000-2000μs, 50Hz), 中位 1500μs=STOP
+- ELRS RX → ESP32: UART1 RX=GPIO15 TX=GPIO4, CRSF 协议 420k baud, 16ch × 11-bit, 双向遥测
+
+### ESP32 UART 分配
+| UART | 引脚 | 设备 | 波特率 | 方向 |
+|------|------|------|--------|------|
+| UART0 | GPIO1/3 | USB Serial (CP2102) | 115200 | 双向 — debug/monitor |
+| UART1 | RX=15, TX=4 | ELRS 接收机 (CRSF) | 420k | 双向 — RC通道+遥测 |
+| UART2 | TX=17, RX=16 | STM32F103 | 115200 | 双向 — MotorCmd+遥测 |
+| SoftSerial | RX=18 | OpenMV Cam | 115200 | 单向 RX — VIS 协议帧 |
 
 ## Language Convention
 
-**注释和文档使用中文 + 英文专业名词。** 技术术语 (YOLO, PWM, FreeRTOS, UART, GPIO, LEDC, JSON, checksum, H-bridge, HC-SR04, model, frame, packet 等) 保持英文；解释性文字、架构说明、注意事项使用中文。
+**注释和文档使用中文 + 英文专业名词。** 技术术语 (YOLO, PWM, FreeRTOS, UART, GPIO, CRSF, ELRS, CAN, CRC, ESC, BMS, model, frame, packet 等) 保持英文；解释性文字、架构说明、注意事项使用中文。
 
 ## Build System
 
 - **ESP32**: Arduino IDE 或 PlatformIO。入口: `ESP32_Solo/ESP32_Solo.ino`。基于 Arduino framework (底层 ESP-IDF)。
+- **STM32**: Arduino IDE (STM32duino) 或 PlatformIO。基于 STM32Duino core。
 - **OpenMV**: MicroPython，直接运行于 OpenMV Cam。无编译步骤 — 将 `.py` 文件复制到摄像头。
 
 ## Architecture Conventions
 
-- FreeRTOS tasks 运行于双核 ESP32: MotorTask + VisionTask on Core 0, WebTask on Core 1。
+- **三层架构**: L1 OpenMV (感知) → L2 ESP32 (决策) → L3 STM32 (执行+安全)。
+- **安全优先**: 5 条独立关断路径 — 硬线急停、过流保护、命令超时、遥控失联、视觉超时。L3 的安全机制独立于 L1/L2。
+- ESP32 上 FreeRTOS tasks: FollowLogic + VisionBridge on Core 0, WebTask (Dashboard) on Core 1。
 - Task 间通信通过 FreeRTOS queue (`MotorCmd` struct, 2 bytes)。
+- `DataAggregator` 封装互斥锁，统一管理 CarState + VisState + STM32 遥测数据。
 - 主循环无动态分配 — 固定大小 queue 和栈分配 struct。
 - `Config.h` 是引脚、阈值、task 参数的单一数据源 (single source of truth)。
-- 避障运行于 MotorTask 内部，优先级链: 危险区 STOP → 命令超时 → 警告区转向 → 正常跟随。
-- `DataAggregator` 封装互斥锁，统一管理线程安全的 CarState + VisState 读写。
+- 电机控制: STM32 输出标准 RC PWM (1000-2000μs) 到电调，电调内部处理 H-bridge 换向和死区。
+- Motor command 为 `enum class CarCmd : uint8_t`。
 
 ## Code Style
 
-- C++ for ESP32 (`.cpp`/`.h`), MicroPython for OpenMV (`.py`)。
+- C++ for ESP32 & STM32 (`.cpp`/`.h`), MicroPython for OpenMV (`.py`)。
 - 引脚分配为 `constexpr` in `Config.h`。
-- Motor command 为 `enum class CarCmd : uint8_t`。
 - `FollowLogic::update()` 直接返回 `MotorCmd` struct，不再使用字符串协议。
 - OpenMV 使用 assert 验证配置参数阈值。
+
+## Safety Architecture
+
+| # | 触发源 | 实现层 | 机制 |
+|---|--------|--------|------|
+| 1 | 急停按钮 | STM32 GPIO + 继电器 | 物理断开 48V 动力电 |
+| 2 | 过流检测 | STM32 ADC | 电流超阈值 → PWM 归零 |
+| 3 | 命令超时 | STM32 SysTick | 500ms 无命令 → STOP |
+| 4 | 遥控失联 | ESP32 CRSF | ELRS link lost → STOP |
+| 5 | 视觉超时 | ESP32 VisionBridge | VIS_TIMEOUT → 降级 STOP |
 
 ## Testing
 
@@ -37,8 +79,8 @@
 
 ## Available Agents & Skills
 
-- `cortex-debugger`: ESP32 firmware crash analysis (Guru Meditation, stack overflow, FreeRTOS deadlocks, task watchdog resets)
-- `protocol-analyzer`: UART protocol debugging (VIS: ASCII frames, XOR checksum verification, framing errors)
+- `cortex-debugger`: ESP32/STM32 firmware crash analysis (Guru Meditation, HardFault, stack overflow, FreeRTOS deadlocks)
+- `protocol-analyzer`: UART/CRSF protocol debugging (VIS frames, CRSF parsing, checksum verification)
 - `esp32-firmware-engineer`: ESP-IDF specific guidance (build/flash/monitor, partition tables, sdkconfig, power optimization)
 
 ## Git LFS
