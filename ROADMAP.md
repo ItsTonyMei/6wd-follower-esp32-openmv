@@ -79,9 +79,9 @@ UART3.write() ──────────────►   ▼               
 - [x] 串口通信确认: COM9, CP210x @ 115200
 - [x] **固件清理完成**: 移除 UltrasonicSensors, MotorDriver, MotorTask, Tasks 旧文件
 - [x] **Clean Boot 验证**: WiFi AP 启动, Dashboard 在线, 无重启循环
+- [x] **Dashboard 测试通过**: 手机端深色主题, `/status` JSON 接口, 200ms 轮询
 - [ ] 标记 FollowLogic → 保留在 ESP32，需重构为差速转向
 - [ ] 标记 VisionBridge → 保留，无需改动
-- [ ] 标记 DashboardServer → 保留，扩展遥测字段
 - [ ] 标记 DataAggregator → 保留，新增 STM32 遥测字段 + VisState tofDistance
 
 ### 0.3 OpenMV 现有代码验证

@@ -69,7 +69,7 @@ constexpr unsigned long COMMAND_TIMEOUT_MS = 500;
 
 // ─── WiFi AP 配置 ───
 constexpr char WIFI_SSID[] = "Tracked Robot";
-constexpr char WIFI_PASS[] = "YOUR_WIFI_PASSWORD";
+constexpr char WIFI_PASS[] = "12345678";
 
 // ─── FreeRTOS task stack size ───
 constexpr uint32_t TASK_STACK_SIZE = 4096;

@@ -1,368 +1,164 @@
 // ============================================================================
-// 履带车视觉跟随系统 — Web Dashboard (embedded SPA)
-// 实时显示: motor PWM / vision detection / distScore / tofDistance / STM32 遥测
+// 履带车视觉跟随系统 — 手机端 Web Dashboard (Phase 0.2)
+// 深色主题, 200ms 轮询 /status, 无外部依赖
 // ============================================================================
 
 const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>6轮车 Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>履带车跟随</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee;
-       max-width: 480px; margin: 0 auto; padding: 8px; }
-header { display: flex; justify-content: space-between; align-items: center;
-         background: #16213e; padding: 10px 14px; border-radius: 8px; margin-bottom: 8px; }
-header h1 { font-size: 15px; color: #00d4ff; }
-.snap-btn { background: #00d4ff; color: #1a1a2e; border: none; padding: 6px 14px;
-            border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px; }
-.snap-btn:active { background: #00a8cc; }
-.status-bar { display: flex; gap: 12px; background: #16213e; padding: 8px 14px;
-              border-radius: 8px; margin-bottom: 8px; font-size: 13px; }
-.status-item { display: flex; gap: 6px; align-items: center; }
-.badge { padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
-.badge-ok { background: #00c853; color: #fff; }
-.badge-warn { background: #ffc107; color: #000; }
-.badge-error { background: #f44336; color: #fff; }
-.badge-stop { background: #f44336; color: #fff; animation: blink 0.5s infinite; }
-@keyframes blink { 50% { opacity: 0.5; } }
-.card { background: #16213e; border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; }
-.card-title { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-.us-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.card-item { background: #0f3460; border-radius: 6px; padding: 8px; text-align: center; }
-.us-label { font-size: 11px; color: #aaa; margin-bottom: 4px; }
-.us-val { font-size: 22px; font-weight: bold; margin-bottom: 4px; }
-.us-bar { height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
-.us-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s, background 0.3s; }
-.canvas-wrap { background: #0a0a1a; border-radius: 8px; padding: 8px; text-align: center; }
-canvas { max-width: 100%; border-radius: 4px; background: #0a0a1a; }
-.canvas-note { font-size: 10px; color: #555; margin-top: 4px; }
-.motor-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.motor-label { font-size: 11px; color: #aaa; margin-bottom: 4px; }
-.motor-val { font-size: 16px; font-weight: bold; margin-bottom: 4px; }
-.motor-bar { height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
-.motor-bar-fill { height: 100%; background: #00d4ff; border-radius: 3px; transition: width 0.3s; }
-.dist-score-wrap { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.dist-label { font-size: 11px; color: #aaa; }
-.dist-bar { flex: 1; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
-.dist-fill { height: 100%; border-radius: 4px; transition: width 0.2s, background 0.2s; }
-.dist-val { font-size: 12px; font-weight: bold; min-width: 40px; text-align: right; }
-footer { text-align: center; font-size: 10px; color: #444; margin-top: 8px; }
-.snap-loading { color: #ffc107; font-size: 12px; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Segoe UI',sans-serif;background:#0f1117;color:#c9d1d9;
+     max-width:420px;margin:0 auto;padding:10px 10px 30px}
+h2{font-size:14px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bottom:1px solid #21262d}
+.card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px;margin-bottom:8px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.col{flex:1}
+.lbl{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.val{font-size:16px;font-weight:bold;color:#e6ed3f}
+.val-big{font-size:28px;font-weight:bold}
+.badge{display:inline-block;padding:3px 10px;border-radius:10px;font-size:13px;font-weight:bold}
+.ok{background:#238636;color:#fff}
+.warn{background:#d2991d;color:#000}
+.err{background:#da3633;color:#fff}
+.idle{background:#30363d;color:#8b949e}
+.bar-wrap{height:10px;background:#21262d;border-radius:5px;overflow:hidden;margin:4px 0}
+.bar-fill{height:100%;border-radius:5px;transition:width .3s,background .3s}
+.r{background:#da3633}.y{background:#d2991d}.g{background:#238636}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.footer{text-align:center;font-size:10px;color:#484f58;margin-top:8px}
+.mono{font-family:'SF Mono',Consolas,monospace;font-size:13px}
 </style>
 </head>
 <body>
 
-<header>
-  <h1>🚗 6轮车 Dashboard</h1>
-  <button class="snap-btn" onclick="requestSnapshot()">📷 Snapshot</button>
-</header>
-
-<div class="status-bar">
-  <div class="status-item">
-    Action: <span id="action" class="badge badge-ok">--</span>
+<!-- Header -->
+<div class="card" style="display:flex;justify-content:space-between;align-items:center">
+  <div>
+    <div style="font-size:18px;font-weight:bold;color:#58a6ff">履带车跟随系统</div>
+    <div class="lbl">Tracked Vehicle Follower</div>
   </div>
-  <div class="status-item">
-    ESP32: <span id="car-status" class="badge badge-ok">✓</span>
-  </div>
-  <div class="status-item">
-    OpenMV: <span id="vis-status" class="badge badge-ok">✓</span>
+  <div style="text-align:right">
+    <span id="wifi-badge" class="badge idle">WiFi</span>
+    <div class="lbl" style="margin-top:2px" id="uptime">--</div>
   </div>
 </div>
 
+<!-- 视觉感知 -->
+<h2>视觉感知</h2>
 <div class="card">
-  <div class="card-title">Obstacle Distance</div>
-  <div class="us-bars">
-    <div class="card-item">
-      <div class="us-label">Left US</div>
-      <div class="us-val" id="ul-val">--</div>
-      <div class="us-bar"><div class="us-bar-fill" id="ul-bar" style="width:0%"></div></div>
+  <div class="row">
+    <div>
+      <div class="lbl">检测</div>
+      <span id="vis-badge" class="badge idle" style="font-size:15px">等待数据</span>
     </div>
-    <div class="card-item">
-      <div class="us-label">Right US</div>
-      <div class="us-val" id="ur-val">--</div>
-      <div class="us-bar"><div class="us-bar-fill" id="ur-bar" style="width:0%"></div></div>
+    <div style="text-align:right">
+      <div class="lbl">置信度</div>
+      <div class="val" id="vis-conf">--</div>
     </div>
   </div>
-</div>
-
-<div class="card">
-  <div class="card-title">Top View <span style="font-size:10px;color:#555">(front at bottom)</span></div>
-  <div class="canvas-wrap">
-    <canvas id="topview"></canvas>
-    <div class="canvas-note">Top=far(>3m) · Bottom=near(<1m) · Box color: far=green/med=yellow/near=red</div>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-title">Distance Score</div>
-  <div class="dist-score-wrap">
-    <span class="dist-label">Near</span>
-    <div class="dist-bar"><div class="dist-fill" id="dist-fill" style="width:0%"></div></div>
-    <span class="dist-val" id="dist-val">--</span>
-    <span class="dist-label">Far</span>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-title">Motor Status</div>
-  <div class="motor-bars">
-    <div class="card-item">
-      <div class="motor-label">Left Motor</div>
-      <div class="motor-val" id="mot-l">--</div>
-      <div class="motor-bar"><div class="motor-bar-fill" id="mot-l-bar" style="width:0%"></div></div>
+  <div style="margin-top:10px">
+    <div class="lbl">距离估计</div>
+    <div class="row" style="align-items:baseline">
+      <div class="val-big" id="vis-dist">--</div>
+      <div class="lbl" style="font-size:13px" id="vis-dist-tag"></div>
     </div>
-    <div class="card-item">
-      <div class="motor-label">Right Motor</div>
-      <div class="motor-val" id="mot-r">--</div>
-      <div class="motor-bar"><div class="motor-bar-fill" id="mot-r-bar" style="width:0%"></div></div>
+    <div class="bar-wrap"><div class="bar-fill" id="dist-bar" style="width:0%"></div></div>
+    <div class="row" style="margin-top:2px"><span class="lbl">近</span><span class="lbl">远</span></div>
+  </div>
+  <div class="grid2" style="margin-top:8px">
+    <div><div class="lbl">ToF 测距</div><div class="val" id="vis-tof">--</div></div>
+    <div><div class="lbl">检测框</div><div class="val" id="vis-box">--</div></div>
+  </div>
+</div>
+
+<!-- 车辆状态 -->
+<h2>车辆状态</h2>
+<div class="card">
+  <div class="row">
+    <div>
+      <div class="lbl">动作</div>
+      <span id="car-act" class="badge idle" style="font-size:16px">STOP</span>
+    </div>
+    <div style="text-align:right">
+      <div class="lbl">数据</div>
+      <span id="car-ok" class="badge idle">--</span>
     </div>
   </div>
+  <div class="grid2" style="margin-top:8px">
+    <div><div class="lbl">左 PWM</div><div class="val" id="car-l">0</div></div>
+    <div><div class="lbl">右 PWM</div><div class="val" id="car-r">0</div></div>
+  </div>
 </div>
 
-<footer id="footer">Last update: --</footer>
+<h2>系统</h2>
+<div class="card">
+  <div class="grid2">
+    <div><div class="lbl">运行时间</div><div class="val" id="sys-uptime">--</div></div>
+    <div><div class="lbl">WiFi 客户端</div><div class="val" id="sys-clients">--</div></div>
+  </div>
+</div>
+
+<div class="footer" id="footer">正在连接...</div>
 
 <script>
-// ============================================================================
-// Canvas and context (dimensions read from HTML, not hardcoded)
-// ============================================================================
-const canvas = document.getElementById('topview');
-const ctx = canvas.getContext('2d');
-const W = canvas.width || 320;
-const H = canvas.height || 240;
-
-// Thresholds from ESP32 (dynamically loaded from /status)
-const config = {
-  ds_stop: 0.85,
-  ds_slow: 0.65,
-  ds_far: 0.30
-};
-
-// ============================================================================
-// Draw background grid
-// ============================================================================
-function drawGrid() {
-  ctx.strokeStyle = '#222';
-  ctx.lineWidth = 1;
-  for (let x = 0; x < W; x += 40) {
-    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
-  }
-  for (let y = 0; y < H; y += 40) {
-    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
-  }
-  ctx.strokeStyle = '#333';
-  ctx.setLineDash([4,4]);
-  ctx.beginPath(); ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H); ctx.stroke();
-  ctx.setLineDash([]);
+let fail = 0;
+function barColor(ds, cfg) {
+  if (ds >= (cfg.ds_stop||0.85)) return 'r';
+  if (ds >= (cfg.ds_slow||0.65)) return 'y';
+  return 'g';
+}
+function distTag(ds, cfg) {
+  if (ds >= (cfg.ds_stop||0.85)) return '太近';
+  if (ds >= (cfg.ds_slow||0.65)) return '较近';
+  if (ds >= (cfg.ds_far||0.30)) return '适中';
+  return '较远';
 }
 
-// ============================================================================
-// Draw car body (at bottom center)
-// ============================================================================
-function drawCar() {
-  ctx.fillStyle = '#00d4ff';
-  ctx.fillRect(W/2-20, H-30, 40, 20);
-  ctx.fillStyle = '#fff';
-  ctx.font = '9px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('Front', W/2, H-14);
+function update() {
+  fetch('/status').then(r=>r.json()).then(d=>{
+    fail=0;
+    let v=d.vis||{}, c=d.car||{}, cfg=d.cfg||{}, sys=d.sys||{};
+
+    // 视觉
+    let vb=document.getElementById('vis-badge');
+    if(v.v && v.hp){ vb.textContent='有人 PERSON'; vb.className='badge ok'; }
+    else if(v.v){ vb.textContent='无人 SCAN'; vb.className='badge warn'; }
+    else { vb.textContent='等待数据'; vb.className='badge idle'; }
+    document.getElementById('vis-conf').textContent=v.hp?(v.conf*100).toFixed(0)+'%':'--';
+    document.getElementById('vis-tof').textContent=v.tof>0?(v.tof/1000).toFixed(2)+'m':'--';
+    let ds=v.ds||0, pct=Math.min(100,Math.max(0,ds*100));
+    let bar=document.getElementById('dist-bar');
+    bar.style.width=pct+'%'; bar.className='bar-fill '+barColor(ds,cfg);
+    document.getElementById('vis-dist').textContent=ds.toFixed(2);
+    document.getElementById('vis-dist-tag').textContent=distTag(ds,cfg);
+    document.getElementById('vis-box').textContent=v.hp?v.w+'x'+v.h+' @('+v.cx+','+v.cy+')':'--';
+
+    // 车辆
+    let act=(c.act||'STOP'), ae=document.getElementById('car-act');
+    ae.textContent=act;
+    ae.className='badge '+(act==='STOP'?'idle':act.indexOf('AVD')>=0?'warn':'ok');
+    document.getElementById('car-ok').textContent=c.v?'OK':'--';
+    document.getElementById('car-ok').className='badge '+(c.v?'ok':'idle');
+    document.getElementById('car-l').textContent=c.l||0;
+    document.getElementById('car-r').textContent=c.r||0;
+
+    // 系统
+    let up=sys.uptime||0, m=Math.floor(up/60000), s=Math.floor((up%60000)/1000);
+    document.getElementById('sys-uptime').textContent=m+'m '+s+'s';
+    document.getElementById('sys-clients').textContent=(sys.wifi_clients||0)+' 个';
+    document.getElementById('uptime').textContent='运行 '+m+'m'+s+'s';
+    document.getElementById('footer').textContent='更新: '+new Date().toLocaleTimeString();
+  }).catch(()=>{
+    fail++;
+    document.getElementById('footer').textContent='失败 x'+fail+' '+new Date().toLocaleTimeString();
+  });
 }
-
-// ============================================================================
-// Draw detection box from OpenMV
-// Maps 192x192 model coords to canvas dimensions
-// ============================================================================
-function drawDetection(vis) {
-  if (!vis.v || !vis.hp) return;
-
-  // Map OpenMV coords (192x192) to canvas (W x H)
-  const dvx = vis.cx * (W / 192.0);
-  const dvy = H - vis.cy * (H / 192.0);
-  const dw = vis.w * (W / 192.0);
-  const dh = vis.h * (H / 192.0);
-
-  // Color by dist_score
-  const ds = vis.ds || 0;
-  let boxColor;
-  if (ds >= config.ds_stop) boxColor = '#f44336';
-  else if (ds >= config.ds_slow) boxColor = '#ffc107';
-  else if (ds >= config.ds_far) boxColor = '#00c853';
-  else boxColor = '#4caf50';
-
-  // Draw box
-  ctx.strokeStyle = boxColor;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(dvx - dw/2, dvy - dh/2, dw, dh);
-
-  // Center dot
-  ctx.fillStyle = boxColor;
-  ctx.beginPath();
-  ctx.arc(dvx, dvy, 4, 0, Math.PI*2);
-  ctx.fill();
-
-  // Label
-  ctx.fillStyle = boxColor;
-  ctx.font = 'bold 10px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(vis.type + ' ' + vis.conf.toFixed(2), dvx, dvy - dh/2 - 4);
-
-  // Distance estimate
-  let distM = '?';
-  if (ds >= config.ds_stop) distM = '<0.5m';
-  else if (ds >= config.ds_slow) distM = '0.5-1m';
-  else if (ds >= config.ds_far) distM = '1-3m';
-  else distM = '>3m';
-  ctx.fillStyle = '#aaa';
-  ctx.font = '9px monospace';
-  ctx.fillText(distM, dvx, dvy + dh/2 + 12);
-}
-
-// ============================================================================
-// ToF distance indicator (VL53L1X, replaced ultrasonic)
-// ============================================================================
-function drawTofDistance(vis) {
-  if (!vis.v) return;
-  const tof = vis.tof || 0;
-  if (tof <= 0) return;
-  const tofM = (tof / 1000).toFixed(2);
-  ctx.fillStyle = '#0ff';
-  ctx.font = '9px monospace';
-  ctx.textAlign = 'right';
-  ctx.fillText('ToF: ' + tofM + 'm', W - 4, 20);
-}
-
-// ============================================================================
-// Compose topview from sub-components
-// ============================================================================
-function drawTopview(car, vis) {
-  ctx.clearRect(0, 0, W, H);
-  drawGrid();
-  drawCar();
-  drawDetection(vis);
-  drawTofDistance(vis);
-}
-
-// ============================================================================
-// Utility: cm → color
-// ============================================================================
-function distColor(cm) {
-  if (cm <= 0 || cm > 400) return '#555';
-  if (cm < 20) return '#f44336';
-  if (cm < 40) return '#ffc107';
-  return '#00c853';
-}
-
-// ============================================================================
-// Utility: score → color
-// ============================================================================
-function scoreColor(s) {
-  if (s >= config.ds_stop) return '#f44336';
-  if (s >= config.ds_slow) return '#ffc107';
-  if (s >= config.ds_far) return '#00c853';
-  return '#00c853';
-}
-
-// ============================================================================
-// Update all UI elements from JSON data
-// ============================================================================
-function updateUI(data) {
-  // Sync thresholds from ESP32
-  if (data.cfg) {
-    config.ds_stop = data.cfg.ds_stop;
-    config.ds_slow = data.cfg.ds_slow;
-    config.ds_far = data.cfg.ds_far;
-  }
-
-  const car = data.car;
-  const vis = data.vis;
-
-  // Status badges
-  if (!car.v) {
-    document.getElementById('car-status').className = 'badge badge-error';
-    document.getElementById('car-status').textContent = '✗';
-  } else {
-    document.getElementById('car-status').className = 'badge badge-ok';
-    document.getElementById('car-status').textContent = '✓';
-  }
-
-  if (!vis.v) {
-    document.getElementById('vis-status').className = 'badge badge-error';
-    document.getElementById('vis-status').textContent = '✗';
-  } else {
-    document.getElementById('vis-status').className = 'badge badge-ok';
-    document.getElementById('vis-status').textContent = '✓';
-  }
-
-  // Action badge
-  const actEl = document.getElementById('action');
-  if (car.v) {
-    actEl.textContent = car.act || '--';
-    actEl.className = car.act === 'STOP' ? 'badge badge-stop' : 'badge badge-ok';
-  }
-
-  // Ultrasonic
-  if (car.v) {
-    document.getElementById('ul-val').textContent = car.ul + 'cm';
-    document.getElementById('ur-val').textContent = car.ur + 'cm';
-    // ToF distance display (VL53L1X, mm)
-    const tofEl = document.getElementById('tof-val');
-    if (tofEl && vis.tof > 0) {
-      tofEl.textContent = (vis.tof / 1000).toFixed(2) + 'm';
-    } else if (tofEl) {
-      tofEl.textContent = '--';
-    }
-  }
-
-  // Motors
-  if (car.v) {
-    document.getElementById('mot-l').textContent = car.l;
-    document.getElementById('mot-r').textContent = car.r;
-    document.getElementById('mot-l-bar').style.width = (car.l/255*100) + '%';
-    document.getElementById('mot-r-bar').style.width = (car.r/255*100) + '%';
-  }
-
-  // Topview canvas
-  drawTopview(car, vis);
-
-  // Distance score bar
-  if (vis.v && vis.hp) {
-    const ds = vis.ds || 0;
-    const dsPct = Math.min(100, ds * 100);
-    document.getElementById('dist-fill').style.width = dsPct + '%';
-    document.getElementById('dist-fill').style.background = scoreColor(ds);
-    document.getElementById('dist-val').textContent = ds.toFixed(2);
-  }
-
-  // Footer timestamp
-  document.getElementById('footer').textContent = 'Last update: ' + new Date().toLocaleTimeString();
-}
-
-// ============================================================================
-// Poll /status every 200ms
-// ============================================================================
-function poll() {
-  fetch('/status')
-    .then(r => r.json())
-    .then(updateUI)
-    .catch(() => {
-      document.getElementById('car-status').className = 'badge badge-error';
-      document.getElementById('car-status').textContent = '✗';
-    });
-}
-
-// ============================================================================
-// Snapshot button (reserved for future use)
-// ============================================================================
-function requestSnapshot() {
-  const btn = document.querySelector('.snap-btn');
-  btn.textContent = '🚧 WIP';
-  setTimeout(() => { btn.textContent = '📷 Snapshot'; }, 2000);
-}
-
-setInterval(poll, 200);
+update(); setInterval(update, 200);
 </script>
 </body>
 </html>
