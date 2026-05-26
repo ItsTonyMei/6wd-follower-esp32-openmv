@@ -20,8 +20,9 @@
 // │ UART0    │ GPIO1/3 (固定)  │ USB Serial — debug/monitor       │
 // │ UART1    │ RX=15, TX=4     │ ELRS 接收机 CRSF 协议 (420k baud)│
 // │ UART2    │ TX=17, RX=16    │ STM32 USART1 双向 (115200)       │
-// │ SoftSerial│ RX=18           │ OpenMV VIS 帧 (115200, 单向 RX)  │
+// │ (Phase0) │ ESP8266 桥接     │ VIS 接收暂由 ESP8266 代理        │
 // └──────────┴────────────────┴──────────────────────────────────┘
+// 注意: ESP32 Serial2 (GPIO16/17) 硬件不稳定, VIS 接收暂用 ESP8266 Bridge
 
 // ─── UART1: ELRS/CRSF 遥控接收机 ───
 constexpr uint8_t PIN_CRSF_RX       = 15;   // ← ELRS RX CRSF TX
@@ -29,7 +30,7 @@ constexpr uint8_t PIN_CRSF_TX       = 4;    // → ELRS RX CRSF RX (双向遥测
 constexpr uint32_t CRSF_BAUD        = 420000;
 
 // ─── SoftSerial: OpenMV VisionBridge (单向上行) ───
-constexpr uint8_t PIN_VIS_RX        = 16;   // ← OpenMV UART3 TX (Serial2 default RX)
+constexpr uint8_t PIN_VIS_RX        = 16;   // ← OpenMV P0 SW UART (Serial2 RX)
 
 // ─── UART2: STM32 双向通信 (MotorCmd 下行 + 遥测上行) ───
 constexpr uint8_t PIN_STM32_TX      = 17;   // → STM32 USART1 RX

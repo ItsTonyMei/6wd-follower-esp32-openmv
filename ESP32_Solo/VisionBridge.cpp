@@ -2,12 +2,12 @@
 #include "Config.h"
 #include "ProtocolUtils.h"
 
-// Serial2: default RX=GPIO16, TX=GPIO17 (ESP32-WROOM-32U 硬件验证待完成)
+// Serial2: default RX=GPIO16 (← N6 P0 SW UART), 9600 baud
 #define VIS_UART Serial2
 
 void VisionBridge::begin() {
-    VIS_UART.begin(115200);
-    Serial.printf("[VisionBridge] Serial2 RX=16 @ 115200\n");
+    VIS_UART.begin(4800);
+    Serial.printf("[VisionBridge] Serial2 RX=GPIO%d @ 4800\n", PIN_VIS_RX);
 }
 
 void VisionBridge::reset() {
@@ -17,8 +17,14 @@ void VisionBridge::reset() {
 }
 
 void VisionBridge::handle() {
-    while (VIS_UART.available()) {
-        char c = VIS_UART.read();
+    // 直接 read(), 每次最多处理 80 字节防止死循环
+    int c, limit = 80;
+    static unsigned long dbgMs = 0;
+    while (limit-- > 0 && (c = VIS_UART.read()) >= 0 && c < 256) {
+        if (millis() - dbgMs > 1000) {
+            Serial.printf("[VIS] rx active\n");
+            dbgMs = millis();
+        }
         if (c == '\n' || c == '\r') {
             if (rxLen_ >= 4 && rxBuf_[0] == 'V' && rxBuf_[1] == 'I'
                 && rxBuf_[2] == 'S' && rxBuf_[3] == ':') {

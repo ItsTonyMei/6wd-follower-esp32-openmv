@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + VL53L1X ToF 激光测距 + 视觉距离融合; **ESP32** 负责 FollowLogic 决策 + WiFi Dashboard + ELRS/CRSF 遥控接收; **STM32F103** 负责硬实时电机控制 + 安全保护。OpenMV → ESP32 通过 SoftSerial (VIS 协议), ESP32 ↔ STM32 通过 UART2 (MotorCmd + 遥测协议), ELRS 接收机 → ESP32 通过 UART1 (CRSF 协议 420k baud)。
+金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + VL53L1X ToF 激光测距 + 视觉距离融合; **ESP32** 负责 FollowLogic 决策 + ELRS/CRSF 遥控接收; **STM32F103** 负责硬实时电机控制 + 安全保护。Phase 0 阶段 ESP32 的 Serial2 (GPIO16/17) 硬件异常，VIS 接收 + WiFi Dashboard 暂由 **ESP8266 (NodeMCU V3)** 桥接。OpenMV → ESP8266 通过 P0 SW UART 4800 baud (VIS 协议), ESP8266 → ESP32 通过内部 WiFi 转发; ESP32 ↔ STM32 通过 UART2 (MotorCmd + 遥测协议), ELRS 接收机 → ESP32 通过 UART1 (CRSF 协议 420k baud)。
 
 ## Hardware Platform
 
@@ -14,8 +14,9 @@
 ### 控制板
 | 板卡 | 角色 | 关键外设 |
 |------|------|---------|
-| OpenMV Cam (H7+/N6) | L1 感知层 | Camera + YOLO LC + VL53L1X ToF 测距扩展板 (I2C) + UART3 TX |
-| ESP32-WROOM-32U (DevKit V1) | L2 决策层 | ESP32-D0WD-V3 rev3.1, WiFi AP + ELRS/CRSF (UART1) + STM32 (UART2) |
+| OpenMV Cam N6 | L1 感知层 | YOLOv8n NPU (45FPS) + VL53L1X ToF (I2C2, P4/P5) + VIS P0 SW UART |
+| ESP8266 NodeMCU V3 (ESP-12E) | L2 桥接层 (Phase 0) | WiFi Dashboard + VIS 接收 (D5/GPIO14, SoftwareSerial 4800bd) |
+| ESP32-WROOM-32U (DevKit V1) | L2 决策层 (Phase 1+) | ESP32-D0WD-V3 rev3.1, FollowLogic + ELRS/CRSF (UART1) + STM32 (UART2) |
 | STM32F103C8T6 (定制板) | L3 执行安全层 | USART1 (PA9/PA10) ↔ ESP32, 2ch RC PWM → 电调, 急停 GPIO, ADC |
 
 ### STM32 定制板详情
@@ -32,14 +33,12 @@
 - **其他 LED**: LED3/LED4 (红色) — 电源指示灯, 非 GPIO 控制
 
 ### 通信链路
-- VL53L1X ToF → OpenMV: I2C (addr 0x29), 40-4000mm, ±1mm, max 50Hz
-  - **N6**: I2C(2) (SCL=P4, SDA=P5), P4 被 I2C 独占，不可与 UART3 共用
-  - **H7 Plus**: I2C(2) (P4=SCL, P5=SDA), Shield 接口需确保接触良好，XSHUT 由 PCB 上拉至 VDD
-- OpenMV → ESP32: N6 软件 UART (P0 TX, 115200) / H7 UART3 (P4 TX, 115200) → ESP32 SoftSerial GPIO18 RX, VIS ASCII 协议 (XOR checksum)
-- ESP32 → STM32: UART2 TX=GPIO17, 115200, 4-byte 二进制 MotorCmd 协议 (CRC8)
-- STM32 → ESP32: UART2 RX=GPIO16, 115200, 10-byte 遥测帧 (编码器/电流/状态)
+- VL53L1X ToF → OpenMV N6: I2C(2) (SCL=P4, SDA=P5), addr 0x29, 40-4000mm, ±1mm, max 50Hz
+- OpenMV N6 → ESP8266: P0 SW UART (4800 baud) → D5 (GPIO14) SoftwareSerial, VIS ASCII 协议 (XOR checksum)
+- ESP8266 → ESP32: WiFi 内部转发 VIS 数据 (Phase 0 临时方案)
+- ESP32 → STM32: UART2 TX=GPIO17 RX=GPIO16, 115200, MotorCmd (下行) + 遥测 (上行)
 - STM32 → 电调: 2ch 标准 RC PWM (1000-2000μs, 50Hz), 中位 1500μs=STOP
-- ELRS RX → ESP32: UART1 RX=GPIO15 TX=GPIO4, CRSF 协议 420k baud, 16ch × 11-bit, 双向遥测
+- ELRS RX → ESP32: UART1 RX=GPIO15 TX=GPIO4, CRSF 协议 420k baud, 16ch × 11-bit
 
 ### ESP32 UART 分配
 | UART | 引脚 | 设备 | 波特率 | 方向 |
@@ -47,8 +46,19 @@
 | UART0 | GPIO1/3 | USB Serial (CP2102) | 115200 | 双向 — debug/monitor |
 | UART1 | RX=15, TX=4 | ELRS 接收机 (CRSF) | 420k | 双向 — RC通道+遥测 |
 | UART2 | TX=17, RX=16 | STM32F103 | 115200 | 双向 — MotorCmd+遥测 |
-| SoftSerial | RX=18 | OpenMV N6 (P0 SW UART) | 115200 | 单向 RX — VIS 协议帧 |
-| (H7) UART3 | P4 TX | OpenMV H7 Plus | 115200 | 单向 TX — VIS 协议帧 |
+
+### ESP8266 UART 分配 (Phase 0 桥接)
+| UART | 引脚 | 设备 | 波特率 | 方向 |
+|------|------|------|--------|------|
+| UART0 | GPIO1/3 | USB Serial (CH340) | 115200 | debug/monitor |
+| SW Serial | RX=14 (D5) | OpenMV N6 (P0 SW UART) | 4800 | 单向 RX — VIS 帧 |
+
+### OpenMV N6 引脚分配
+| 引脚 | 功能 | 说明 |
+|------|------|------|
+| P4 | I2C(2) SCL | VL53L1X ToF (独占) |
+| P5 | I2C(2) SDA | VL53L1X ToF (独占) |
+| P0 | SW UART TX | VIS → ESP8266 D5, 4800 baud |
 
 ## Language Convention
 
@@ -57,6 +67,7 @@
 ## Build System
 
 - **ESP32**: ESP32-WROOM-32U (DevKit V1), Arduino IDE 或 PlatformIO。入口: `ESP32_Solo/ESP32_Solo.ino`。基于 Arduino framework (底层 ESP-IDF)。
+- **ESP8266**: NodeMCU V3 (ESP-12E), Arduino IDE。入口: `ESP8266_Bridge/` (Phase 0 VIS+Dashboard 桥接)。基于 ESP8266 Arduino core 3.1.2。
 - **STM32**: STM32F103C8T6 (定制板, 非 Blue Pill), Arduino IDE (STM32duino) 或 PlatformIO (板: `genericSTM32F103CB`)。基于 STM32Duino core。
   - **Serial 注意**: generic 变体默认 `Serial`→USART2 (PA2/PA3)。定制板 CH9102 连接 USART1 (PA9/PA10)，需用 `HardwareSerial SerialUSART1(PA10, PA9)` 覆盖。
 - **OpenMV**: MicroPython，直接运行于 OpenMV Cam。无编译步骤 — 将 `.py` 文件复制到摄像头。

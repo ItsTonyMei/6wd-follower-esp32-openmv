@@ -61,7 +61,9 @@ UART3.write() ──────────────►   ▼               
 ## Phase 0 — 项目初始化与硬件验证
 
 **目标**: 所有板子能独立跑起来，硬件连接确认，电气方案确定。
-**状态**: STM32 ✅ | OpenMV ⚡ (VL53L1X 已测) | ESP32 ⏳
+**状态**: STM32 ✅ | OpenMV ✅ | ESP32 ⚠️ (Serial2 异常, ESP8266 桥接) | ESP8266 ✅
+
+> **通信调试结论**: ESP32 Serial2 (GPIO16/17) 硬件不稳定。N6→ESP8266 SoftwareSerial (D5/GPIO14, 4800bd) 通道确认。Phase 0 由 ESP8266 桥接 VIS + Dashboard。
 
 ### 0.1 STM32F103C8T6 开发环境搭建 ✅ 完成
 - [x] 安装 STM32duino (Arduino_Core_STM32) 或 PlatformIO
