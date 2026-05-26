@@ -46,7 +46,6 @@ CAMERA_STABILIZE_MS = 2000
 SENSOR_SKIP_FRAMES  = 0 if IS_N6 else 2
 
 DETECTION_THRESHOLD  = 0.4
-VIS_INTERVAL_MS      = 100 if IS_N6 else 200  # N6 更快的更新率
 
 # ---- 距离估计 ----
 AREA_VERY_CLOSE = 0.50
@@ -134,38 +133,33 @@ if person_idx is None:
     person_idx = 0
 
 # ============================================================================
-# Software UART → ESP32 (P0 = VIS TX, 避免 P4 与 I2C(2) SCL 冲突)
+# VIS 输出: 硬件 UART3 on P4 (与 I2C(2) 分时复用 P4)
+# VL53L1X → I2C(2) (P4=SCL, P5=SDA), VIS 发送时暂借 P4 给 UART3 TX
 # ============================================================================
 
-VIS_TX_PIN = 'P0'
-VIS_BAUD    = 115200
-_VIS_BIT_US = 8  # 8μs/bit ≈ 125k (在 115200 接收容差内)
+VIS_BAUD      = 115200
+VIS_INTERVAL_MS = 500   # 每 500ms 发送一次 VIS 帧
 
-def vis_uart_putc(pin, c):
-    """软件 UART 发送 1 字节 (1 start + 8 data LSB + 1 stop)"""
-    pin.low()  # start bit
-    time.sleep_us(_VIS_BIT_US)
-    for i in range(8):
-        if c & (1 << i):
-            pin.high()
-        else:
-            pin.low()
-        time.sleep_us(_VIS_BIT_US)
-    pin.high()  # stop bit
-    time.sleep_us(_VIS_BIT_US)
-
-def vis_uart_write(data_str):
-    """发送 VIS 字符串"""
-    for ch in data_str:
-        vis_uart_putc(_vis_pin, ord(ch))
-
+import pyb as _pyb
 from machine import Pin as _Pin
-_vis_pin = _Pin(VIS_TX_PIN, _Pin.OUT_PP)
-_vis_pin.high()
 
-# ============================================================================
-# VL53L1X ToF init (I2C(2) 独占 P4/P5, 无 UART3 冲突)
-# ============================================================================
+_p4 = _Pin('P4')  # 共享引脚引用
+_vis_uart = _pyb.UART(3, VIS_BAUD, timeout=1000)
+
+def vis_send(data_str):
+    """发送 VIS 帧: 暂借 P4→UART3 TX, 发完还给 I2C(2) SCL"""
+    global tof, TOF_ENABLED
+    _p4.init(_Pin.ALT, alt=7)               # AF7 = USART3 TX
+    _vis_uart.write(data_str)
+    _p4.init(_Pin.ALT_OPEN_DRAIN, alt=4)    # AF4 = I2C2 SCL (归还)
+    # 重新初始化 VL53L1X (~200ms)
+    try:
+        from machine import I2C
+        import vl53l1x
+        tof = vl53l1x.VL53L1X(I2C(2))
+        TOF_ENABLED = True
+    except:
+        TOF_ENABLED = False
 
 TOF_ENABLED = False
 try:
@@ -327,7 +321,7 @@ while True:
         for ch in data_str:
             csum ^= ord(ch)
         try:
-            vis_uart_write("VIS:%s*%d\r\n" % (data_str, csum))
+            vis_send("VIS:%s*%d\r\n" % (data_str, csum))
         except Exception as e:
             uart_errors += 1
 

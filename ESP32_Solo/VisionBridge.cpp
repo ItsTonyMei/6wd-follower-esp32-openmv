@@ -2,12 +2,12 @@
 #include "Config.h"
 #include "ProtocolUtils.h"
 
-// UART1: RX=GPIO15, TX=GPIO4 (TX 未使用, 单向接收 OpenMV 数据)
-#define VIS_UART Serial1
+// Serial2: default RX=GPIO16, TX=GPIO17 (ESP32-WROOM-32U 硬件验证待完成)
+#define VIS_UART Serial2
 
 void VisionBridge::begin() {
-    VIS_UART.begin(115200, SERIAL_8N1, 15, 4);
-    Serial.println("[VisionBridge] UART1 started: RX=GPIO15 @ 115200");
+    VIS_UART.begin(115200);
+    Serial.printf("[VisionBridge] Serial2 RX=16 @ 115200\n");
 }
 
 void VisionBridge::reset() {
@@ -20,7 +20,6 @@ void VisionBridge::handle() {
     while (VIS_UART.available()) {
         char c = VIS_UART.read();
         if (c == '\n' || c == '\r') {
-            // 检测 "VIS:" 帧头
             if (rxLen_ >= 4 && rxBuf_[0] == 'V' && rxBuf_[1] == 'I'
                 && rxBuf_[2] == 'S' && rxBuf_[3] == ':') {
                 rxBuf_[rxLen_] = '\0';
@@ -37,16 +36,12 @@ void VisionBridge::handle() {
 }
 
 bool VisionBridge::parseVisionPacket(const char* buf, size_t /*len*/) {
-    // XOR checksum 验证（含 '*' 则校验，无 '*' 向后兼容）
     if (!verifyChecksum(buf, 4)) {
         return false;
     }
 
-    const char* p = buf + 4;  // 跳过 "VIS:" 前缀
+    const char* p = buf + 4;
     char* end = nullptr;
-
-    // 使用 strtol/strtof 的 endptr 参数逐字段解析，避免 const_cast<char*> 修改 buffer
-    // Parse each comma-separated field using strtol/strtof with endptr
 
     cx_    = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
     cy_    = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
@@ -55,7 +50,6 @@ bool VisionBridge::parseVisionPacket(const char* buf, size_t /*len*/) {
     feetY_  = (int)strtol(p, &end, 10);  if (end == p || *end != ',') return false;  p = end + 1;
     conf_  = strtof(p, &end);           if (end == p || *end != ',') return false;  p = end + 1;
 
-    // 提取 type 字符串 ("PERSON" 或 "NONE")，直到下一个 ',' 或 '*'
     const char* typeEnd = strpbrk(p, ",*");
     if (!typeEnd) return false;
     size_t tLen = typeEnd - p;
@@ -65,18 +59,13 @@ bool VisionBridge::parseVisionPacket(const char* buf, size_t /*len*/) {
     p = typeEnd;
     if (*p == ',') p++;
 
-    // 解析 distScore
     distScore_ = strtof(p, &end);
 
-    // 解析可选的 tofDist 字段 (VL53L1X ToF 距离 mm)
-    // 新格式: distScore,tofDist*XX → end 指向 ','
-    // 旧格式 (向后兼容): distScore*XX → end 指向 '*'
     tofDist_ = 0;
     if (*end == ',') {
         p = end + 1;
         tofDist_ = (int)strtol(p, &end, 10);
     }
-    // end 指向 '*' 或 '\0' — 两者均可接受
 
     return true;
 }

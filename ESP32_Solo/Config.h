@@ -29,7 +29,7 @@ constexpr uint8_t PIN_CRSF_TX       = 4;    // → ELRS RX CRSF RX (双向遥测
 constexpr uint32_t CRSF_BAUD        = 420000;
 
 // ─── SoftSerial: OpenMV VisionBridge (单向上行) ───
-constexpr uint8_t PIN_VIS_RX        = 18;   // ← OpenMV UART3 TX
+constexpr uint8_t PIN_VIS_RX        = 16;   // ← OpenMV UART3 TX (Serial2 default RX)
 
 // ─── UART2: STM32 双向通信 (MotorCmd 下行 + 遥测上行) ───
 constexpr uint8_t PIN_STM32_TX      = 17;   // → STM32 USART1 RX
