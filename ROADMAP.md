@@ -85,15 +85,16 @@ UART3.write() ──────────────►   ▼               
 - [ ] 标记 DataAggregator → 保留，新增 STM32 遥测字段 + VisState tofDistance
 
 ### 0.3 OpenMV 现有代码验证
-- [ ] 在 OpenMV Cam 上运行当前 `OpenMV/main.py`
-- [ ] 确认 YOLO person detection 正常输出
+- [x] 在 OpenMV N6 上运行 `OpenMV/main.py` — **YOLOv8n NPU 推理, 45 FPS**
+- [x] 确认 YOLO person detection 正常输出 — confidence 0.50-0.92
 - [x] VL53L1X 测距扩展板安装 + I2C 扫描确认设备在线 (addr 0x29) — **N6 I2C(2) 已通过**
 - [x] 运行 `OpenMV/test_vl53l1x.py` 验证 — **100/100 有效, ~2.9m, 33.3Hz, ±25mm 抖动**
-- [ ] 用 USB 串口监视 VIS 帧格式正确
-- [ ] 记录当前帧率和检测延迟
+- [ ] 用 USB 串口监视 VIS 帧格式正确 (需 ESP32 在线)
+- [x] 帧率记录: **YOLOv8n NPU=45FPS** (vs 旧 YOLO-LC CPU=~10FPS, 提升 4.5x)
 
-> **N6 配置**: VL53L1X → I2C(2) (SCL→P4, SDA→P5), addr 0x29, Model ID 0xEACC
-> **H7 Plus 待验证**: Shield 接口接触不良导致 I2C 扫不到设备，需排查硬件连接
+> **N6 配置**: YOLOv8n @ `/rom/yolov8n_192.tflite` + YoloV8 postprocess, NPU accelerated
+> VL53L1X → I2C(2) (SCL→P4, SDA→P5), addr 0x29, Model ID 0xEACC
+> N6 绘图 API 使用 tuple 坐标 (不用分开的 x,y 参数)
 
 ### 0.4 硬件清单确认与采购
 | 硬件 | 数量 | 规格 | 用途 | 状态 |
