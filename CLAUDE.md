@@ -33,9 +33,9 @@
 
 ### 通信链路
 - VL53L1X ToF → OpenMV: I2C (addr 0x29), 40-4000mm, ±1mm, max 50Hz
-  - **N6**: I2C(2) 可用，Shield 接口或飞线 SCL→P4 SDA→P5
+  - **N6**: I2C(2) (SCL=P4, SDA=P5), P4 被 I2C 独占，不可与 UART3 共用
   - **H7 Plus**: I2C(2) (P4=SCL, P5=SDA), Shield 接口需确保接触良好，XSHUT 由 PCB 上拉至 VDD
-- OpenMV → ESP32: EspSoftwareSerial GPIO18 RX, 115200, VIS ASCII 协议 (XOR checksum)
+- OpenMV → ESP32: N6 软件 UART (P0 TX, 115200) / H7 UART3 (P4 TX, 115200) → ESP32 SoftSerial GPIO18 RX, VIS ASCII 协议 (XOR checksum)
 - ESP32 → STM32: UART2 TX=GPIO17, 115200, 4-byte 二进制 MotorCmd 协议 (CRC8)
 - STM32 → ESP32: UART2 RX=GPIO16, 115200, 10-byte 遥测帧 (编码器/电流/状态)
 - STM32 → 电调: 2ch 标准 RC PWM (1000-2000μs, 50Hz), 中位 1500μs=STOP
@@ -47,7 +47,8 @@
 | UART0 | GPIO1/3 | USB Serial (CP2102) | 115200 | 双向 — debug/monitor |
 | UART1 | RX=15, TX=4 | ELRS 接收机 (CRSF) | 420k | 双向 — RC通道+遥测 |
 | UART2 | TX=17, RX=16 | STM32F103 | 115200 | 双向 — MotorCmd+遥测 |
-| SoftSerial | RX=18 | OpenMV Cam | 115200 | 单向 RX — VIS 协议帧 |
+| SoftSerial | RX=18 | OpenMV N6 (P0 SW UART) | 115200 | 单向 RX — VIS 协议帧 |
+| (H7) UART3 | P4 TX | OpenMV H7 Plus | 115200 | 单向 TX — VIS 协议帧 |
 
 ## Language Convention
 

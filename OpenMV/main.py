@@ -1,10 +1,11 @@
 # ============================================================================
 # 履带车视觉跟随系统 — OpenMV L1 感知层
-# N6: YOLOv8n NPU 加速 (120+ FPS) + VL53L1X ToF + VIS/UART → ESP32
+# N6: YOLOv8n NPU 加速 + VL53L1X ToF (I2C2, P4/P5) + 软件 UART (P0 TX → ESP32)
 # H7: YOLO-LC CPU 推理 (10 FPS) — 自动降级兼容
+# 注意: P4 被 I2C(2) SCL 独占，VIS 输出用 P0 软件 UART（115200 baud）
 # ============================================================================
 
-import gc, pyb, time, math, os
+import gc, time, math, os
 import ml
 
 # ============================================================================
@@ -133,14 +134,37 @@ if person_idx is None:
     person_idx = 0
 
 # ============================================================================
-# UART bridge to ESP32
+# Software UART → ESP32 (P0 = VIS TX, 避免 P4 与 I2C(2) SCL 冲突)
 # ============================================================================
 
-uart = pyb.UART(3, 115200)
-uart.init(115200, bits=8, parity=None, stop=1, timeout=1000)
+VIS_TX_PIN = 'P0'
+VIS_BAUD    = 115200
+_VIS_BIT_US = 8  # 8μs/bit ≈ 125k (在 115200 接收容差内)
+
+def vis_uart_putc(pin, c):
+    """软件 UART 发送 1 字节 (1 start + 8 data LSB + 1 stop)"""
+    pin.low()  # start bit
+    time.sleep_us(_VIS_BIT_US)
+    for i in range(8):
+        if c & (1 << i):
+            pin.high()
+        else:
+            pin.low()
+        time.sleep_us(_VIS_BIT_US)
+    pin.high()  # stop bit
+    time.sleep_us(_VIS_BIT_US)
+
+def vis_uart_write(data_str):
+    """发送 VIS 字符串"""
+    for ch in data_str:
+        vis_uart_putc(_vis_pin, ord(ch))
+
+from machine import Pin as _Pin
+_vis_pin = _Pin(VIS_TX_PIN, _Pin.OUT_PP)
+_vis_pin.high()
 
 # ============================================================================
-# VL53L1X ToF init — 必须在 UART3 之后 (P4 共用: UART3 TX / I2C(2) SCL)
+# VL53L1X ToF init (I2C(2) 独占 P4/P5, 无 UART3 冲突)
 # ============================================================================
 
 TOF_ENABLED = False
@@ -303,7 +327,7 @@ while True:
         for ch in data_str:
             csum ^= ord(ch)
         try:
-            uart.write("VIS:%s*%d\r\n" % (data_str, csum))
+            vis_uart_write("VIS:%s*%d\r\n" % (data_str, csum))
         except Exception as e:
             uart_errors += 1
 
