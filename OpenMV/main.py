@@ -17,17 +17,17 @@ if IS_N6:
     from ml.postprocessing.ultralytics import YoloV8
     _POSTPROC = YoloV8
     _MODEL_PATH = "/rom/yolov8n_192.tflite"
-    _CAM_W, _CAM_H = 320, 240       # QVGA
-    _FRAME_W, _FRAME_H = 192, 192   # 模型输入
-    _FRAME_CX, _FRAME_CY = 96, 96
+    _CAM_W, _CAM_H = 320, 240       # QVGA 完整分辨率（画面清晰）
 else:
     import sensor as _cam_mod
     from ml.postprocessing.darknet import YoloLC
     _POSTPROC = YoloLC
     _MODEL_PATH = "/rom/yolo_lc_192.tflite"
     _CAM_W, _CAM_H = 320, 240
-    _FRAME_W, _FRAME_H = 192, 192
-    _FRAME_CX, _FRAME_CY = 96, 96
+
+# VIS 协议坐标空间 (ESP32 FollowLogic 期望 192x192)
+_VIS_W, _VIS_H = 192, 192
+_VIS_CX, _VIS_CY = 96, 96
 
 # ============================================================================
 # Configuration
@@ -92,11 +92,7 @@ def setup_camera():
             if hasattr(_cam_obj, m):
                 getattr(_cam_obj, m)(CAMERA_GAINCEILING)
                 break
-        # N6 CSI: window(), H7 sensor: set_windowing()
-        if hasattr(_cam_obj, "window"):
-            _cam_obj.window((_FRAME_W, _FRAME_H))
-        elif hasattr(_cam_obj, "set_windowing"):
-            _cam_obj.set_windowing((_FRAME_W, _FRAME_H))
+        # N6: 不裁剪，用完整 QVGA 分辨率（模型自动居中裁剪到 192x192）
         _cam_obj.snapshot(time=CAMERA_STABILIZE_MS)
     else:
         _cam_mod.reset()
@@ -106,11 +102,11 @@ def setup_camera():
         _cam_mod.set_pixformat(CAMERA_PIXFORMAT)
         _cam_mod.set_hmirror(CAMERA_HMIRROR)
         _cam_mod.set_vflip(CAMERA_VFLIP)
-        _cam_mod.set_windowing((_FRAME_W, _FRAME_H))
+        _cam_mod.set_windowing((_VIS_W, _VIS_H))
         _cam_mod.skip_frames(time=CAMERA_STABILIZE_MS)
 
-    print("Camera OK: %dx%d → model %dx%d (platform=%s)" %
-          (_CAM_W, _CAM_H, _FRAME_W, _FRAME_H, "N6" if IS_N6 else "H7"))
+    print("Camera OK: %dx%d → VIS:%dx%d (platform=%s)" %
+          (_CAM_W, _CAM_H, _VIS_W, _VIS_H, "N6" if IS_N6 else "H7"))
 
 def capture():
     return _cam_obj.snapshot() if IS_N6 else _cam_mod.snapshot()
@@ -174,11 +170,11 @@ def estimate_distance(w, h, feet_y, frame_w, frame_h):
 
     if area_ratio > AREA_CLOSE:
         area_score = min(1.0, area_ratio / AREA_VERY_CLOSE)
-        feet_score = min(1.0, feet_y / _FRAME_H)
+        feet_score = min(1.0, feet_y / frame_h)
         return ("CLOSE_SLOW", area_score * WEIGHT_CLOSE_AREA + feet_score * WEIGHT_CLOSE_FEETY, area_ratio)
 
     if area_ratio > AREA_FAR:
-        feet_score = min(1.0, feet_y / _FRAME_H)
+        feet_score = min(1.0, feet_y / frame_h)
         area_score = area_ratio / AREA_CLOSE
         return ("MEDIUM", feet_score * WEIGHT_MEDIUM_FEETY + area_score * WEIGHT_MEDIUM_AREA, area_ratio)
 
@@ -196,8 +192,9 @@ def estimate_distance(w, h, feet_y, frame_w, frame_h):
 def draw_debug(img, fps, person_rect, score, dist_category, dist_score):
     if not DRAW_DEBUG:
         return
+    w, h = img.width(), img.height()
     # Center cross
-    img.draw_cross((_FRAME_CX, _FRAME_CY), color=200, size=6)
+    img.draw_cross((w // 2, h // 2), color=200, size=6)
     # FPS
     img.draw_string((3, 3), "%d fps" % int(fps), color=(255,255,255), scale=1)
     # Detection
@@ -245,6 +242,7 @@ while True:
 
     # Capture
     img = capture()
+    img_w, img_h = img.width(), img.height()
 
     # Read ToF
     if TOF_ENABLED:
@@ -263,13 +261,10 @@ while True:
     target_cx = target_cy = target_w = target_h = target_feet_y = 0
 
     if detections:
-        # Pick lowest (closest) person
-        # YOLOv8: ([x,y,w,h], score) — rect 是 list
         detections.sort(key=lambda d: d[0][1] + d[0][3], reverse=True)
         rect, score = detections[0]
         x, y, w, h = rect[0], rect[1], rect[2], rect[3]
 
-        # N6 YOLOv8: coords already in model space (192x192 via windowing)
         target_cx = int(x + w // 2)
         target_cy = int(y + h // 2)
         target_w  = int(w)
@@ -277,7 +272,7 @@ while True:
         target_feet_y = int(y + h)
 
         dist_category, dist_score, _ = estimate_distance(
-            target_w, target_h, target_feet_y, _FRAME_W, _FRAME_H)
+            target_w, target_h, target_feet_y, img_w, img_h)
 
         person_rect = (x, y, w, h)
         no_person_count = 0
@@ -289,13 +284,16 @@ while True:
     draw_debug(img, clock.fps(), person_rect, score if detections else 0,
                dist_category, dist_score)
 
-    # VIS output
+    # VIS output (scale coords to 192x192 for ESP32 FollowLogic compatibility)
     if time.ticks_diff(time.ticks_ms(), last_vis_ms) >= VIS_INTERVAL_MS:
         last_vis_ms = now_ms
         if person_rect:
+            sx = _VIS_W / img_w
+            sy = _VIS_H / img_h
             data_str = "%d,%d,%d,%d,%d,%.2f,PERSON,%.2f,%d" % (
-                target_cx, target_cy, target_w, target_h,
-                target_feet_y, score, dist_score, tof_distance)
+                int(target_cx * sx), int(target_cy * sy),
+                int(target_w * sx), int(target_h * sy),
+                int(target_feet_y * sy), score, dist_score, tof_distance)
         else:
             data_str = "0,0,0,0,0,0.00,NONE,0.00,0"
         # XOR checksum
