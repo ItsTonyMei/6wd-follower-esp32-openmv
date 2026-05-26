@@ -1,100 +1,67 @@
-# 6WD Follower — ESP32 + OpenMV
+# 履带车视觉跟随系统 (Tracked Vehicle Visual Follower)
 
-六轮机器人小车：自主跟随行人（YOLO person detection + 超声波避障）。
+金属履带车（载重 100kg）视觉跟随系统。三层架构：OpenMV (感知) → ESP8266/ESP32 (决策) → STM32 (执行+安全)。
 
-Six-wheel robot car: autonomously follows a person using machine vision and ultrasonic obstacle avoidance.
-
-## 架构 (Architecture)
-
-双板设计 (Two-board design): **ESP32** (电机控制 + 超声波 + Dashboard) + **OpenMV** (摄像头 + YOLO person detection)。
+## 架构
 
 ```
-OpenMV → UART1 → ESP32 VisionTask → FollowLogic → MotorCmd queue → MotorTask → MotorDriver
+N6 (L1 感知)           ESP8266 Bridge (L2 桥接)    ESP32 (L2 决策, 待恢复)
+├─ YOLOv8n NPU 45FPS    ├─ VIS 接收 D5@4800bd      ├─ FollowLogic 决策
+├─ VL53L1X ToF (P4/P5)  ├─ WiFi AP Dashboard       ├─ ELRS/CRSF 遥控
+└─ VIS P0 SW UART@4800  └─ /status JSON API        └─ UART2 → STM32
+
+                                                      STM32F103 (L3 安全)
+                                                      ├─ 2ch RC PWM → 电调
+                                                      ├─ 急停 + 过流保护
+                                                      └─ 命令超时 500ms
 ```
 
-| Board | MCU | Role |
-|-------|-----|------|
-| UniBoard | ESP32 | Motor PWM (LEDC), ultrasonic HC-SR04 ×2, WiFi AP dashboard, FreeRTOS tasks |
-| OpenMV Cam | STM32H7 / N6 | RGB565 camera, YOLO LC person detection, UART VIS protocol |
-
-## 目录结构 (Directory Structure)
+## 目录结构
 
 ```
-├── ESP32_Solo/              # ESP32 firmware (Arduino framework)
-│   ├── ESP32_Solo.ino       # 主入口, FreeRTOS task 创建
-│   ├── Config.h             # 统一配置: 引脚, 阈值, task 参数
-│   ├── MotorDriver.h/cpp    # LEDC PWM 电机驱动 (RZ7886 H-bridge)
-│   ├── UltrasonicSensors.h/cpp  # 双 HC-SR04 超声波 + 障碍检测
-│   ├── MotorTask.h/cpp      # 避障状态机 + 电机控制 task
-│   ├── VisionBridge.h/cpp   # OpenMV UART1 VIS 协议解析
-│   ├── FollowLogic.h/cpp    # 人员跟随决策逻辑 → MotorCmd
-│   ├── DataAggregator.h/cpp # CarState + VisState 聚合 + JSON 生成
-│   ├── DashboardServer.h/cpp # WiFi AP + HTTP Dashboard
-│   ├── Tasks.h/cpp          # VisionTask / WebTask FreeRTOS 实现
-│   ├── ProtocolUtils.h/cpp  # XOR checksum 验证 + 安全字符串拷贝
-│   └── index_html.h         # 嵌入式 Web Dashboard (SPA)
-├── OpenMV/                  # OpenMV camera firmware (MicroPython)
-│   ├── main.py              # 完整固件: 摄像头 + YOLO LC + VIS UART
-│   └── yolo_lc_192.tflite   # TFLite model (Git LFS)
-├── Test/                    # 单元测试
-│   ├── ESP32/               # C++ 测试 (PC 端 GCC 编译)
-│   └── OpenMV/              # Python 测试 (pytest)
-└── docs/                    # 文档
-    ├── ARCHITECTURE.md      # 架构说明
-    └── WIRING.md            # 接线指南
+├── OpenMV/                    # N6 固件 (MicroPython)
+│   ├── main.py                # YOLOv8n + ToF + VIS P0 SW UART @ 4800
+│   └── test_vl53l1x.py        # VL53L1X ToF 功能验证
+├── ESP8266_Bridge/            # ESP8266 桥接固件 (Arduino)
+│   └── ESP8266_Bridge.ino     # VIS 接收 + WiFi Dashboard
+├── ESP32_Solo/                # ESP32 决策固件 (Arduino, Phase 1+)
+│   ├── ESP32_Solo.ino         # Clean Boot: WiFi AP + Dashboard
+│   ├── Config.h               # 统一配置
+│   ├── VisionBridge.cpp/h     # VIS 协议解析
+│   ├── FollowLogic.cpp/h      # 跟随决策逻辑
+│   ├── DataAggregator.cpp/h   # 数据聚合 + JSON
+│   ├── DashboardServer.cpp/h  # HTTP Dashboard
+│   └── index_html.h           # Dashboard 页面
+├── STM32_Solo/                # STM32 固件 (PlatformIO)
+│   └── src/main.cpp           # Blink 验证 (PA4 LED2)
+├── ROADMAP.md                 # 开发路线图
+├── CLAUDE.md                  # 项目手册
+└── docs/                      # 文档
 ```
 
-## 核心特性 (Key Features)
+## Phase 0 验证结果 (2026-05-27)
 
-- **人员跟随 (Person following)** — YOLO LC 检测人体位置，ESP32 根据距离分 (distScore) 和横向偏移计算 MotorCmd
-- **多特征距离融合 (Multi-feature distance fusion)** — area_ratio + feet_y + top_y 加权融合 → distScore (0.0-1.0)
-- **超声波避障 (Ultrasonic obstacle avoidance)** — 双 HC-SR04: 危险区 < 20cm → STOP, 警告区 20-40cm → 避障转向
-- **安全超时 (Safety timeouts)** — 命令超时 500ms, 视觉超时 700ms, 避障超时 2s
-- **WiFi Dashboard** — ESP32 AP 模式，手机浏览器直连 `http://192.168.4.1` 查看实时数据
-- **双核 FreeRTOS** — MotorTask + VisionTask on Core 0, WebTask on Core 1
+| 板卡 | 状态 | 关键数据 |
+|------|------|---------|
+| N6 | ✅ | YOLOv8n 45FPS, VL53L1X I2C(2), VIS P0@4800 |
+| ESP8266 | ✅ | VIS 接收 97%+ 成功率, WiFi Dashboard |
+| ESP32 | ⚠️ | Serial2 GPIO16/17 异常, Phase 1+ 待换板 |
+| STM32 | ✅ | PA4 LED2 验证, 工具链确认 |
 
-## 硬件 (Hardware)
+## 通信协议
 
-- ESP32 Dev Module (UniBoard)
-- OpenMV Cam H7 Plus 或 N6
-- HC-SR04 超声波传感器 ×2
-- RZ7886 双 H-bridge 电机驱动 (6WD 平台)
-- XL2596 5V 降压模块
-- 7.4V 锂电池
+```
+N6 P0 SW UART @ 4800bd → ESP8266 D5 (GPIO14)
+VIS:cx,cy,w,h,feetY,conf,PERSON,distScore,tofDist*XX\r\n
+```
 
-## 快速开始 (Quick Start)
+## 快速开始
 
-### ESP32
-
-1. 用 Arduino IDE 或 PlatformIO 打开 `ESP32_Solo/ESP32_Solo.ino`
-2. 安装依赖库: `WiFi`, `WebServer`, `esp_task_wdt`, FreeRTOS
-3. 在 `Config.h` 中修改 WiFi 密码 (`WIFI_PASS`)
-4. 编译烧录到 ESP32
-
-### OpenMV
-
-1. 将 `OpenMV/` 目录下所有文件拷贝到 OpenMV Cam
-2. 确保 `yolo_lc_192.tflite` 存在 (Git LFS 追踪)
-3. N6 用户: 通过 OpenMV IDE → Tools → Edit ROM FS 上传 model
+- **N6**: `main.py` 已写入闪存, 上电自启动
+- **ESP8266**: 烧录 `ESP8266_Bridge/ESP8266_Bridge.ino`, WiFi AP "Tracked Robot"/12345678
+- **Dashboard**: 手机连 WiFi 后访问 `http://192.168.4.1`
+- **STM32**: PlatformIO 打开 `STM32_Solo/`, COM11 @ 115200 烧录
 
 ## Git LFS
 
-TFLite model 文件 (`OpenMV/yolo_lc_192.tflite`) 通过 Git LFS 存储。克隆前请安装 Git LFS:
-
-```bash
-git lfs install
-git clone https://github.com/ItsTonyMei/6wd-follower-esp32-openmv.git
-```
-
-## 协议 (Protocol)
-
-OpenMV → ESP32 使用单向 UART VIS 协议:
-
-```
-VIS:cx,cy,w,h,feetY,conf,TYPE,distScore*checksum\r\n
-```
-
-- 所有坐标为 model 空间 (192×192)
-- `TYPE` = `PERSON` (有人) 或 `NONE` (无人)
-- `checksum` = 数据字段 (不含 `VIS:` 前缀和 `*`) 的 XOR
-- 频率: 200ms 间隔
+仅 `*.tflite` 文件由 Git LFS 追踪。

@@ -58,12 +58,14 @@ UART3.write() ──────────────►   ▼               
 
 ---
 
-## Phase 0 — 项目初始化与硬件验证
+## Phase 0 — 项目初始化与硬件验证 ✅ 核心完成
 
 **目标**: 所有板子能独立跑起来，硬件连接确认，电气方案确定。
-**状态**: STM32 ✅ | OpenMV ✅ | ESP32 ⚠️ (Serial2 异常, ESP8266 桥接) | ESP8266 ✅
+**状态**: STM32 ✅ | OpenMV N6 ✅ | ESP8266 Bridge ✅ | ESP32 ⚠️ (Serial2 异常, Phase 1+ 待换板)
 
-> **通信调试结论**: ESP32 Serial2 (GPIO16/17) 硬件不稳定。N6→ESP8266 SoftwareSerial (D5/GPIO14, 4800bd) 通道确认。Phase 0 由 ESP8266 桥接 VIS + Dashboard。
+> **通信方案**: N6 P0 SW UART @ 4800bd → ESP8266 D5 SoftwareSerial → WiFi Dashboard (97%+ 成功率)
+> **ESP32 Serial2 (GPIO16/17) 硬件不稳定, Phase 0 VIS 接收+Dashboard 由 ESP8266 桥接**
+> **待推进**: Phase 0.5 电气拓扑, 0.6 原装系统逆向 (Phase 1 可并行)
 
 ### 0.1 STM32F103C8T6 开发环境搭建 ✅ 完成
 - [x] 安装 STM32duino (Arduino_Core_STM32) 或 PlatformIO
