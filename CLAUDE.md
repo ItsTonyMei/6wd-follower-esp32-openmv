@@ -16,7 +16,20 @@
 |------|------|---------|
 | OpenMV Cam (H7+/N6) | L1 感知层 | Camera + YOLO LC + VL53L1X ToF 测距扩展板 (I2C) + UART3 TX |
 | ESP32-WROOM-32U (DevKit V1) | L2 决策层 | WiFi AP + ELRS/CRSF 遥控接收 (UART1) + STM32 通信 (UART2) |
-| STM32F103C8T6 | L3 执行安全层 | 2ch RC PWM 输出 → 电调 + 急停 GPIO + ADC 电流采样 |
+| STM32F103C8T6 (定制板) | L3 执行安全层 | USART1 (PA9/PA10) ↔ ESP32, 2ch RC PWM → 电调, 急停 GPIO, ADC |
+
+### STM32 定制板详情
+- **主控**: STM32F103C8T6 (Cortex-M3, 72MHz, 64KB Flash, 20KB SRAM)
+- **USB-UART**: CH9102 via USB-C, 连 USART1 (PA9=TX, PA10=RX)
+- **烧录**: PlatformIO serial @ 115200, 序列 `-dtr,rts,dtr,,,,` (DTR→NRST, RTS→BOOT0)
+- **调试接口**: SWD (GND, PA14/SWCLK, 3V3, PA13/SWDIO)
+- **电源**: USB-C 供电, 板载 DC-DC 降压, 电源开关 + LED1(电源指示, 红色)
+- **用户外设**:
+  - LED2 (蓝色, PA4, active-LOW) — 用户可编程
+  - BEEP 蜂鸣器 (PA3, active-LOW) — 用户可编程
+  - User 按键 + Reset 按键
+  - PB10/PB11 底部端子引出
+- **其他 LED**: LED3/LED4 (红色) — 电源指示灯, 非 GPIO 控制
 
 ### 通信链路
 - VL53L1X ToF → OpenMV: I2C (addr 0x29), 40-4000mm, ±1mm, max 50Hz
@@ -43,7 +56,8 @@
 ## Build System
 
 - **ESP32**: ESP32-WROOM-32U (DevKit V1), Arduino IDE 或 PlatformIO。入口: `ESP32_Solo/ESP32_Solo.ino`。基于 Arduino framework (底层 ESP-IDF)。
-- **STM32**: STM32F103C8T6 (Blue Pill), Arduino IDE (STM32duino) 或 PlatformIO (板: `genericSTM32F103CB`)。基于 STM32Duino core。
+- **STM32**: STM32F103C8T6 (定制板, 非 Blue Pill), Arduino IDE (STM32duino) 或 PlatformIO (板: `genericSTM32F103CB`)。基于 STM32Duino core。
+  - **Serial 注意**: generic 变体默认 `Serial`→USART2 (PA2/PA3)。定制板 CH9102 连接 USART1 (PA9/PA10)，需用 `HardwareSerial SerialUSART1(PA10, PA9)` 覆盖。
 - **OpenMV**: MicroPython，直接运行于 OpenMV Cam。无编译步骤 — 将 `.py` 文件复制到摄像头。
 
 ## Architecture Conventions
