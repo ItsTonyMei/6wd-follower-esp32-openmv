@@ -1,10 +1,9 @@
 // ============================================================================
-// 履带车视觉跟随系统 — ESP32 L2 决策层
+// 履带车视觉跟随系统 — ESP32 L2 决策层 (Phase 0.2 Clean)
 // MCU: ESP32-WROOM-32U (DevKit V1), Xtensa LX6 双核 @ 240MHz, Flash 4MB
-// ESP32 负责: OpenMV VIS 帧解析 + FollowLogic 决策 + CRSF 遥控 + WiFi Dashboard
-// 电机控制通过 UART2 → STM32 (MotorCmd)，不再由 ESP32 直驱 PWM。
-// 超声波 HC-SR04 已移除，距离测量由 OpenMV VL53L1X ToF 测距扩展板提供。
-// TODO(Phase 4.1): 移除 UltrasonicSensors / MotorTask 超声波依赖
+//
+// 已移除: UltrasonicSensors, MotorDriver, MotorTask (PWM直驱 → STM32)
+// 保留:   VisionBridge, FollowLogic, DataAggregator, DashboardServer
 // ============================================================================
 
 #include <WiFi.h>
@@ -16,22 +15,15 @@
 #include "DataAggregator.h"
 #include "VisionBridge.h"
 #include "FollowLogic.h"
-#include "MotorDriver.h"
-#include "UltrasonicSensors.h"
-#include "MotorTask.h"
-#include "Tasks.h"
 
 // ============================================================
-// 全局对象 (Global objects)
+// 全局对象
 // ============================================================
 
 DataAggregator      aggregator;
 DashboardServer    webServer;
 VisionBridge       visionBridge;
 FollowLogic        followLogic;
-MotorDriver        motor;
-UltrasonicSensors  ultrasonic;
-MotorTask          motorTask;
 
 // FreeRTOS IPC
 QueueHandle_t      motorCmdQueue;
@@ -40,9 +32,75 @@ QueueHandle_t      motorCmdQueue;
 // Task Handles
 // ============================================================
 
-static TaskHandle_t motorTaskHandle  = nullptr;
-static TaskHandle_t visionTaskHandle = nullptr;
-static TaskHandle_t webTaskHandle    = nullptr;
+static TaskHandle_t logicTaskHandle = nullptr;
+static TaskHandle_t webTaskHandle   = nullptr;
+
+// ============================================================
+// MainTask: VIS 解析 + FollowLogic + MotorCmd 输出 (Core 0)
+// ============================================================
+
+void mainTaskFunc(void* param) {
+    Serial.println("[MainTask] started");
+    esp_task_wdt_add(NULL);
+
+    for (;;) {
+        esp_task_wdt_reset();
+
+        // 读取 OpenMV VIS 帧 (SoftSerial GPIO18)
+        visionBridge.handle();
+
+        if (visionBridge.hasValidReading()) {
+            // 更新 VisState 到 DataAggregator
+            if (aggregator.lock(pdMS_TO_TICKS(10))) {
+                VisState vs;
+                vs.valid       = visionBridge.hasValidReading();
+                vs.hasPerson   = visionBridge.hasPerson();
+                vs.cx          = visionBridge.cx();
+                vs.cy          = visionBridge.cy();
+                vs.w           = visionBridge.w();
+                vs.h           = visionBridge.h();
+                vs.confidence  = visionBridge.confidence();
+                vs.type[0]     = '\0';
+                strncpy(vs.type, visionBridge.type(), sizeof(vs.type) - 1);
+                vs.distScore   = visionBridge.distScore();
+                vs.tofDistance = visionBridge.tofDistance();
+                vs.feetY       = visionBridge.feetY();
+                vs.timestamp   = millis();
+                aggregator.updateVis(vs);
+                aggregator.unlock();
+            }
+
+            // FollowLogic 决策 → MotorCmd
+            MotorCmd mc = followLogic.update(
+                visionBridge.hasPerson(),
+                visionBridge.cx(),
+                visionBridge.feetY(),
+                visionBridge.distScore()
+            );
+
+            // TODO(Phase 3): MotorCmd → UART2 → STM32
+            // 当前 Phase 0.2 仅推入 queue 验证数据流
+            xQueueSend(motorCmdQueue, &mc, pdMS_TO_TICKS(10));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
+// ============================================================
+// WebTask: WiFi AP + HTTP Dashboard (Core 1)
+// ============================================================
+
+void webTaskFunc(void* param) {
+    Serial.println("[WebTask] started");
+    esp_task_wdt_add(NULL);
+
+    for (;;) {
+        esp_task_wdt_reset();
+        webServer.handle();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
 
 // ============================================================
 // Setup
@@ -52,74 +110,67 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    // 初始化子系统 (Init subsystems)
-    motor.begin();
-    ultrasonic.begin();
-    motor.stop();
+    Serial.println("\n====================================");
+    Serial.println("ESP32 L2 — Phase 0.2 Clean Boot");
+    Serial.println("====================================");
+
+    // VisionBridge (SoftSerial GPIO18 RX ← OpenMV)
     visionBridge.begin();
 
-    // 创建互斥锁并注入 DataAggregator（封装线程安全）
+    // DataAggregator + 互斥锁
     SemaphoreHandle_t mtx = xSemaphoreCreateMutex();
     if (mtx == nullptr) {
-        Serial.println("[ERROR] Failed to create aggregator mutex!");
+        Serial.println("[ERROR] Mutex creation failed!");
         esp_restart();
     }
     aggregator.begin(mtx);
 
-    // WiFi AP — 手机/PC 直连 Dashboard
+    // WiFi AP
+    Serial.print("WiFi AP: ");
+    Serial.print(WIFI_SSID);
     if (!WiFi.softAP(WIFI_SSID, WIFI_PASS)) {
-        Serial.println("[ERROR] WiFi AP creation failed!");
+        Serial.println(" ... FAILED");
+    } else {
+        Serial.print(" ... OK  IP: ");
+        Serial.println(WiFi.softAPIP());
     }
     delay(200);
 
-    // 创建 MotorCmd FreeRTOS queue (4 元素, 每元素 2 字节)
+    // MotorCmd FreeRTOS queue
     motorCmdQueue = xQueueCreate(4, sizeof(MotorCmd));
     if (motorCmdQueue == nullptr) {
-        Serial.println("[ERROR] Failed to create motorCmdQueue!");
+        Serial.println("[ERROR] Queue creation failed!");
         esp_restart();
     }
 
-    // 启动 Web Dashboard（HTTP port 80）
+    // Web Dashboard
     webServer.begin(&aggregator);
 
-    // 初始化 MotorTask（依赖注入）
-    motorTask.begin(&motor, &ultrasonic, &aggregator, motorCmdQueue);
+    // ─── 创建 FreeRTOS Tasks ───
 
-    Serial.println();
-    Serial.println("=== Tracked Vehicle Follower — ESP32 L2 ===");
-    Serial.println("OpenMV UART3 TX → SoftSerial GPIO18 (VIS)");
-    Serial.println("ELRS CRSF       → UART1 RX=GPIO15 TX=GPIO4");
-    Serial.println("STM32           ↔ UART2 TX=GPIO17 RX=GPIO16");
-    Serial.println("VL53L1X ToF     → OpenMV I2C Shield (距离替代超声波)");
-    Serial.print("WiFi AP: ");
-    Serial.print(WIFI_SSID);
-    Serial.print("  IP: ");
-    Serial.println(WiFi.softAPIP());
-    Serial.println("Open http://192.168.4.1 in browser");
-    Serial.println();
+    // MainTask: VIS + FollowLogic (Core 0, priority 3)
+    BaseType_t res = xTaskCreatePinnedToCore(
+        mainTaskFunc, "MainTask", TASK_STACK_SIZE,
+        nullptr, 3, &logicTaskHandle, 0);
+    if (res != pdPASS) Serial.println("[ERROR] MainTask creation failed!");
 
-    // 创建 FreeRTOS Tasks
-    BaseType_t res;
-
-    // MotorTask: 避障 + 电机控制 (Core 0, priority 3)
+    // WebTask: Dashboard (Core 1, priority 1)
     res = xTaskCreatePinnedToCore(
-        MotorTask::taskFunc, "MotorTask", TASK_STACK_SIZE, &motorTask, 3, &motorTaskHandle, 0);
-    if (res != pdPASS) Serial.println("[ERROR] MotorTask creation failed!");
-
-    // VisionTask: OpenMV UART1 解析 + FollowLogic 决策 (Core 0, priority 3)
-    res = xTaskCreatePinnedToCore(
-        visionTaskFunc, "VisionTask", TASK_STACK_SIZE, nullptr, 3, &visionTaskHandle, 0);
-    if (res != pdPASS) Serial.println("[ERROR] VisionTask creation failed!");
-
-    // WebTask: WiFi AP + HTTP Dashboard (Core 1, priority 1)
-    res = xTaskCreatePinnedToCore(
-        webTaskFunc, "WebTask", TASK_STACK_SIZE, nullptr, 1, &webTaskHandle, 1);
+        webTaskFunc, "WebTask", TASK_STACK_SIZE,
+        nullptr, 1, &webTaskHandle, 1);
     if (res != pdPASS) Serial.println("[ERROR] WebTask creation failed!");
 
-    Serial.println("[setup] All tasks created. Deleting main loop task.");
+    Serial.println();
+    Serial.println("=== System Ready ===");
+    Serial.print("  WiFi: "); Serial.print(WIFI_SSID);
+    Serial.print(" @ "); Serial.println(WiFi.softAPIP());
+    Serial.println("  Dashboard: http://192.168.4.1");
+    Serial.println("  VIS: waiting for OpenMV...");
+    Serial.println("  MotorCmd: queue ready (STM32 not connected)");
+    Serial.println("====================\n");
+
+    // 删除 loop task, 仅保留 FreeRTOS tasks
     vTaskDelete(NULL);
 }
 
-// loop() 不会执行（setup 中已删除 loop task）
-// loop() is never reached (setup deletes the loop task)
-void loop() {}
+void loop() {}  // never reached

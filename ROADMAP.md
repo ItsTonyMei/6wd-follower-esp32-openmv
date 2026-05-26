@@ -75,13 +75,14 @@ UART3.write() ──────────────►   ▼               
 - [x] **Blink 验证通过** — PA4 LED2 蓝灯 500ms 闪烁, 烧录 115200bps 序列 `-dtr,rts,dtr,,,,`
 
 ### 0.2 ESP32-WROOM-32U 现有代码模块化梳理
-- [x] 芯片丝印确认: **ESP32-WROOM-32U** (DevKit V1, Xtensa LX6 双核 @ 240MHz)
-- [ ] 标记 MotorTask → 将迁移到 STM32（PWM 直驱代码后续删除，改为 UART MotorCmd）
+- [x] 芯片丝印确认: **ESP32-WROOM-32U** (ESP32-D0WD-V3 rev3.1, 240MHz, 4MB Flash)
+- [x] 串口通信确认: COM9, CP210x @ 115200
+- [x] **固件清理完成**: 移除 UltrasonicSensors, MotorDriver, MotorTask, Tasks 旧文件
+- [x] **Clean Boot 验证**: WiFi AP 启动, Dashboard 在线, 无重启循环
 - [ ] 标记 FollowLogic → 保留在 ESP32，需重构为差速转向
 - [ ] 标记 VisionBridge → 保留，无需改动
 - [ ] 标记 DashboardServer → 保留，扩展遥测字段
 - [ ] 标记 DataAggregator → 保留，新增 STM32 遥测字段 + VisState tofDistance
-- [ ] 移除超声波避障代码（已由 VL53L1X ToF 测距扩展板替代，距离数据从 OpenMV VIS 帧统一传入）
 
 ### 0.3 OpenMV 现有代码验证
 - [ ] 在 OpenMV Cam 上运行当前 `OpenMV/main.py`

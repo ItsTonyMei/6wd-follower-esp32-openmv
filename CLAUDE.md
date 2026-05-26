@@ -15,7 +15,7 @@
 | 板卡 | 角色 | 关键外设 |
 |------|------|---------|
 | OpenMV Cam (H7+/N6) | L1 感知层 | Camera + YOLO LC + VL53L1X ToF 测距扩展板 (I2C) + UART3 TX |
-| ESP32-WROOM-32U (DevKit V1) | L2 决策层 | WiFi AP + ELRS/CRSF 遥控接收 (UART1) + STM32 通信 (UART2) |
+| ESP32-WROOM-32U (DevKit V1) | L2 决策层 | ESP32-D0WD-V3 rev3.1, WiFi AP + ELRS/CRSF (UART1) + STM32 (UART2) |
 | STM32F103C8T6 (定制板) | L3 执行安全层 | USART1 (PA9/PA10) ↔ ESP32, 2ch RC PWM → 电调, 急停 GPIO, ADC |
 
 ### STM32 定制板详情
