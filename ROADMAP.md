@@ -86,25 +86,33 @@ UART3.write() ──────────────►   ▼               
 - [ ] 标记 VisionBridge → 保留，无需改动
 - [ ] 标记 DataAggregator → 保留，新增 STM32 遥测字段 + VisState tofDistance
 
-### 0.3 OpenMV 现有代码验证
+### 0.3 OpenMV 现有代码验证 ✅ 完成
 - [x] 在 OpenMV N6 上运行 `OpenMV/main.py` — **YOLOv8n NPU 推理, 45 FPS**
 - [x] 确认 YOLO person detection 正常输出 — confidence 0.50-0.92
 - [x] VL53L1X 测距扩展板安装 + I2C 扫描确认设备在线 (addr 0x29) — **N6 I2C(2) 已通过**
 - [x] 运行 `OpenMV/test_vl53l1x.py` 验证 — **100/100 有效, ~2.9m, 33.3Hz, ±25mm 抖动**
-- [ ] 用 USB 串口监视 VIS 帧格式正确 (需 ESP32 在线)
+- [x] VIS 帧输出验证 — **P0 SW UART @ 4800 → ESP8266 D5, 97.4% 成功率**
 - [x] 帧率记录: **YOLOv8n NPU=45FPS** (vs 旧 YOLO-LC CPU=~10FPS, 提升 4.5x)
 
 > **N6 配置**: YOLOv8n @ `/rom/yolov8n_192.tflite` + YoloV8 postprocess, NPU accelerated
-> VL53L1X → I2C(2) (SCL→P4, SDA→P5), addr 0x29, Model ID 0xEACC
-> N6 绘图 API 使用 tuple 坐标 (不用分开的 x,y 参数)
+> VL53L1X → I2C(2) (SCL=P4, SDA=P5), addr 0x29, Model ID 0xEACC
+> VIS → P0 SW UART @ 4800 baud → ESP8266 Bridge D5 (GPIO14)
+> **N6 绘图 API**: 使用 tuple 坐标 (不用分开的 x,y 参数)
+
+### 0.3b ESP8266 Bridge 验证 ✅ 完成
+- [x] SoftwareSerial D5(GPIO14) @ 4800 接收 N6 VIS 帧 — **97.4% 成功率**
+- [x] WiFi AP "Tracked Robot" + HTTP Dashboard (:80) — 手机端验证通过
+- [x] `/status` JSON API 实时更新 VIS 数据
+- [x] 注意: ESP32 Serial2 (GPIO16/17) 硬件不稳定, 暂由 ESP8266 桥接
 
 ### 0.4 硬件清单确认与采购
 | 硬件 | 数量 | 规格 | 用途 | 状态 |
 |------|------|------|------|------|
 | STM32F103C8T6 (定制板) | 1 | Cortex-M3 72MHz, 64KB Flash, 20KB SRAM | 实时控制主板 | **已有** (丝印+烧录确认) |
 | ESP32-WROOM-32U (DevKit V1) | 1 | Xtensa LX6 双核 240MHz, 4MB Flash | 决策 + WiFi | **已有** (丝印+Dashboard确认) |
-| OpenMV Cam N6 | 1 | Neural-ART NPU, 45FPS YOLOv8n | 视觉感知 | **已有** (YOLO+ToF验证) |
+| OpenMV Cam N6 | 1 | Neural-ART NPU, 45FPS YOLOv8n | 视觉感知 | **已有** (YOLO+ToF+VIS验证) |
 | VL53L1X ToF 测距模块 | 1 | I2C, 40-4000mm, ±1mm, 50Hz | 激光测距 | **已有** (N6 I2C2验证) |
+| ESP8266 NodeMCU V3 | 1 | ESP-12E, 80MHz, WiFi | VIS 桥接 + Dashboard (Phase 0) | **已有** (Bridge验证) |
 | 履带底盘 (含电机) | 1 | 金属履带, 载重 100kg | 执行平台 | **已到货** |
 | 防水 48V 双向双路差速有刷电调 | 1 | 48V 45A 500W ×2ch | 左右履带独立驱动 | 已确认待装 |
 | 防水 48V→5V 10A 降压模块 | 1 | 防水, 10A | 控制电路供电 | 已确认待装 |

@@ -1,8 +1,7 @@
 # ============================================================================
-# 履带车视觉跟随系统 — OpenMV L1 感知层
-# N6: YOLOv8n NPU 加速 + VL53L1X ToF (I2C2, P4/P5) + 软件 UART (P0 TX → ESP32)
-# H7: YOLO-LC CPU 推理 (10 FPS) — 自动降级兼容
-# 注意: P4 被 I2C(2) SCL 独占，VIS 输出用 P0 软件 UART（115200 baud）
+# 履带车视觉跟随系统 — OpenMV L1 感知层 (Phase 0 验证通过)
+# N6: YOLOv8n NPU 45FPS + VL53L1X ToF (I2C2, P4/P5)
+# VIS 输出: P0 软件 UART @ 4800 baud → ESP8266 Bridge D5 (GPIO14)
 # ============================================================================
 
 import gc, time, math, os
@@ -133,33 +132,32 @@ if person_idx is None:
     person_idx = 0
 
 # ============================================================================
-# VIS 输出: 硬件 UART3 on P4 (与 I2C(2) 分时复用 P4)
-# VL53L1X → I2C(2) (P4=SCL, P5=SDA), VIS 发送时暂借 P4 给 UART3 TX
+# VIS 输出: P0 软件 UART @ 4800 baud → ESP8266 Bridge D5 (GPIO14)
+# VL53L1X → I2C(2) (P4=SCL, P5=SDA) — 独占, 无冲突
 # ============================================================================
 
-VIS_BAUD      = 115200
-VIS_INTERVAL_MS = 500   # 每 500ms 发送一次 VIS 帧
+VIS_BAUD      = 4800
+VIS_INTERVAL_MS = 200   # 每 200ms 发送一次 VIS 帧
 
-import pyb as _pyb
 from machine import Pin as _Pin
+_p0 = _Pin('P0', _Pin.OUT_PP)
+_p0.high()
 
-_p4 = _Pin('P4')  # 共享引脚引用
-_vis_uart = _pyb.UART(3, VIS_BAUD, timeout=1000)
+_VIS_BIT_US = 208  # 4800 baud = 208us/bit
+
+def vis_putc(c):
+    _p0.low()
+    time.sleep_us(_VIS_BIT_US)
+    for i in range(8):
+        _p0.high() if (c >> i) & 1 else _p0.low()
+        time.sleep_us(_VIS_BIT_US)
+    _p0.high()
+    time.sleep_us(_VIS_BIT_US)
 
 def vis_send(data_str):
-    """发送 VIS 帧: 暂借 P4→UART3 TX, 发完还给 I2C(2) SCL"""
-    global tof, TOF_ENABLED
-    _p4.init(_Pin.ALT, alt=7)               # AF7 = USART3 TX
-    _vis_uart.write(data_str)
-    _p4.init(_Pin.ALT_OPEN_DRAIN, alt=4)    # AF4 = I2C2 SCL (归还)
-    # 重新初始化 VL53L1X (~200ms)
-    try:
-        from machine import I2C
-        import vl53l1x
-        tof = vl53l1x.VL53L1X(I2C(2))
-        TOF_ENABLED = True
-    except:
-        TOF_ENABLED = False
+    """发送 VIS 帧: 软件 UART on P0"""
+    for ch in data_str:
+        vis_putc(ord(ch))
 
 TOF_ENABLED = False
 try:

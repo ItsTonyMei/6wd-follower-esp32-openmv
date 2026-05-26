@@ -142,8 +142,9 @@ void setup() {
     Serial.println("\n=== ESP8266 Bridge — Phase 0 ===");
 
     // VIS 接收
-    visSerial.begin(4800);
+    visSerial.begin(4800);  // N6 P0 SW UART @ 4800 baud
     Serial.println("[VIS] D5(GPIO14) @ 4800 baud");
+    Serial.println("[WiFi] Tracked Robot / 12345678");
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, HIGH);
 
@@ -166,17 +167,28 @@ void loop() {
 
     // VIS 接收: 直接 read(), SoftwareSerial.available() 在 ESP8266 上不可靠
     int c;
+    static unsigned long rxCount = 0, okCount = 0, failCount = 0;
     while ((c = visSerial.read()) >= 0 && c < 256) {
         digitalWrite(LED_BUILTIN, LOW);
         if (c == '\n' || c == '\r') {
             if (visLen > 0) {
                 visLine[visLen] = '\0';
-                parseVisFrame(visLine, visLen);
+                rxCount++;
+                if (parseVisFrame(visLine, visLen)) {
+                    okCount++;
+                } else {
+                    failCount++;
+                }
                 visLen = 0;
             }
         } else if (visLen < 250) {
             visLine[visLen++] = (char)c;
         }
         digitalWrite(LED_BUILTIN, HIGH);
+    }
+    static unsigned long lastDbg = 0;
+    if (millis() - lastDbg > 3000) {
+        lastDbg = millis();
+        Serial.printf("[RX] total=%lu ok=%lu fail=%lu\n", rxCount, okCount, failCount);
     }
 }
