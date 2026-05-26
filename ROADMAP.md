@@ -58,21 +58,21 @@ UART3.write() ──────────────►   ▼               
 
 ---
 
-## Phase 0 — 项目初始化与硬件验证 (预计 2-3 天)
+## Phase 0 — 项目初始化与硬件验证
 
 **目标**: 所有板子能独立跑起来，硬件连接确认，电气方案确定。
+**状态**: STM32 ✅ | OpenMV ⚡ (VL53L1X 已测) | ESP32 ⏳
 
-### 0.1 STM32F103C8T6 开发环境搭建
+### 0.1 STM32F103C8T6 开发环境搭建 ✅ 完成
 - [x] 安装 STM32duino (Arduino_Core_STM32) 或 PlatformIO
 - [x] USB-TTL 烧录接线确认 (PA9/PA10, CH9102 USB-UART via COM11)
-- [x] 芯片丝印确认: **STM32F103C8T6** (Cortex-M3 @ 72MHz, 64KB Flash, 20KB SRAM)
-- [x] Blink LED 验证工具链 — **烧录成功** (115200 bps, 序列 `-dtr,rts,dtr,,,,`)
+- [x] 芯片丝印确认: **STM32F103C8T6** (Cortex-M3 @ 72MHz, 64KB Flash, 20KB SRAM) — 定制板, 非 Blue Pill
 - [x] **GPIO 外设扫描完成** — 30 个 GPIO 逐一轮询确认:
   - **PA3 = BEEP 蜂鸣器** (active-LOW, 2-pin 排针引出)
   - **PA4 = LED2 蓝灯** (active-LOW, 用户可编程)
   - LED1/LED3/LED4 = 电源指示灯 (红色, 非 GPIO 控制)
   - Serial: USART1 (PA9=TX, PA10=RX), generic 变体默认 USART2 需 `HardwareSerial` 覆盖
-  - 烧录配置详见 `STM32_Solo/platformio.ini`
+- [x] **Blink 验证通过** — PA4 LED2 蓝灯 500ms 闪烁, 烧录 115200bps 序列 `-dtr,rts,dtr,,,,`
 
 ### 0.2 ESP32-WROOM-32U 现有代码模块化梳理
 - [x] 芯片丝印确认: **ESP32-WROOM-32U** (DevKit V1, Xtensa LX6 双核 @ 240MHz)
