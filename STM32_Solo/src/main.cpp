@@ -1,6 +1,7 @@
 /**
- * STM32F103CB — Blink Test (L3 执行与安全层验证)
+ * STM32F103C8T6 — Blink Test (L3 执行与安全层验证)
  *
+ * 芯⽚丝印: STM32F103C8T6 (ARM Cortex-M3 @ 72MHz, Flash 64KB, SRAM 20KB)
  * 验证工具链烧录正常: PC13 LED 以 500ms 周期闪烁。
  * 同时 USART1 输出启动信息到串口监视器 (PA9=TX, 115200 baud)。
  */
@@ -13,10 +14,10 @@ void setup() {
     delay(100);
 
     Serial.println("\n====================================");
-    Serial.println("STM32F103CB — L3 Safety Controller");
+    Serial.println("STM32F103C8T6 — L3 Safety Controller");
     Serial.println("====================================");
-    Serial.print("MCU: STM32F103CBT6 @ 72MHz\n");
-    Serial.print("Flash: 128KB | SRAM: 20KB\n");
+    Serial.print("MCU: STM32F103C8T6 @ 72MHz\n");
+    Serial.print("Flash: 64KB | SRAM: 20KB\n");
     Serial.print("Bootloader: v2.2 | RDP: Unlocked\n");
     Serial.println("====================================\n");
 

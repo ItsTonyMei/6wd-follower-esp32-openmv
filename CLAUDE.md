@@ -15,11 +15,13 @@
 | 板卡 | 角色 | 关键外设 |
 |------|------|---------|
 | OpenMV Cam (H7+/N6) | L1 感知层 | Camera + YOLO LC + VL53L1X ToF 测距扩展板 (I2C) + UART3 TX |
-| ESP32 | L2 决策层 | WiFi AP + ELRS/CRSF 遥控接收 (UART1) + STM32 通信 (UART2) |
-| STM32F103 | L3 执行安全层 | 2ch RC PWM 输出 → 电调 + 急停 GPIO + ADC 电流采样 |
+| ESP32-WROOM-32U (DevKit V1) | L2 决策层 | WiFi AP + ELRS/CRSF 遥控接收 (UART1) + STM32 通信 (UART2) |
+| STM32F103C8T6 | L3 执行安全层 | 2ch RC PWM 输出 → 电调 + 急停 GPIO + ADC 电流采样 |
 
 ### 通信链路
-- VL53L1X ToF → OpenMV: I2C Shield 接口 (addr 0x29), 40-4000mm, ±1mm, max 50Hz
+- VL53L1X ToF → OpenMV: I2C (addr 0x29), 40-4000mm, ±1mm, max 50Hz
+  - **N6**: I2C(2) 可用，Shield 接口或飞线 SCL→P4 SDA→P5
+  - **H7 Plus**: I2C(2) (P4=SCL, P5=SDA), Shield 接口需确保接触良好，XSHUT 由 PCB 上拉至 VDD
 - OpenMV → ESP32: EspSoftwareSerial GPIO18 RX, 115200, VIS ASCII 协议 (XOR checksum)
 - ESP32 → STM32: UART2 TX=GPIO17, 115200, 4-byte 二进制 MotorCmd 协议 (CRC8)
 - STM32 → ESP32: UART2 RX=GPIO16, 115200, 10-byte 遥测帧 (编码器/电流/状态)
@@ -40,8 +42,8 @@
 
 ## Build System
 
-- **ESP32**: Arduino IDE 或 PlatformIO。入口: `ESP32_Solo/ESP32_Solo.ino`。基于 Arduino framework (底层 ESP-IDF)。
-- **STM32**: Arduino IDE (STM32duino) 或 PlatformIO。基于 STM32Duino core。
+- **ESP32**: ESP32-WROOM-32U (DevKit V1), Arduino IDE 或 PlatformIO。入口: `ESP32_Solo/ESP32_Solo.ino`。基于 Arduino framework (底层 ESP-IDF)。
+- **STM32**: STM32F103C8T6 (Blue Pill), Arduino IDE (STM32duino) 或 PlatformIO (板: `genericSTM32F103CB`)。基于 STM32Duino core。
 - **OpenMV**: MicroPython，直接运行于 OpenMV Cam。无编译步骤 — 将 `.py` 文件复制到摄像头。
 
 ## Architecture Conventions

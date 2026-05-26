@@ -1,8 +1,12 @@
 # ============================================================================
-# 6WD Follower — OpenMV Person Detection + ESP32 UART Bridge
+# 履带车视觉跟随系统 — OpenMV L1 感知层
+# 功能: YOLO person detection + VL53L1X ToF 激光测距 + VIS/UART → ESP32
 # 兼容: OpenMV H7 Plus (fw 4.x) 和 N6 (fw 5.0.0)
 #
-# N6 用户注意: model 须通过 OpenMV IDE → Tools → Edit ROM FS → Add File
+# 硬件配置:
+#   VL53L1X ToF → I2C(2) (SCL=P4, SDA=P5), addr 0x29, 40-4000mm ±1mm
+#   UART3 → ESP32 (P4 TX, 115200 baud, VIS 协议)
+#   N6 用户: model 须通过 OpenMV IDE → Tools → Edit ROM FS → Add File
 #     选择 yolo_lc_192.tflite → Commit (IDE 自动转换为 Neural-ART NPU 格式)
 # ============================================================================
 

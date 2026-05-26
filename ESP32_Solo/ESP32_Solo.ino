@@ -1,5 +1,6 @@
 // ============================================================================
 // 履带车视觉跟随系统 — ESP32 L2 决策层
+// MCU: ESP32-WROOM-32U (DevKit V1), Xtensa LX6 双核 @ 240MHz, Flash 4MB
 // ESP32 负责: OpenMV VIS 帧解析 + FollowLogic 决策 + CRSF 遥控 + WiFi Dashboard
 // 电机控制通过 UART2 → STM32 (MotorCmd)，不再由 ESP32 直驱 PWM。
 // 超声波 HC-SR04 已移除，距离测量由 OpenMV VL53L1X ToF 测距扩展板提供。

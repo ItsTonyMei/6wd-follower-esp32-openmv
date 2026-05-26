@@ -62,13 +62,14 @@ UART3.write() ──────────────►   ▼               
 
 **目标**: 所有板子能独立跑起来，硬件连接确认，电气方案确定。
 
-### 0.1 STM32F103 开发环境搭建
+### 0.1 STM32F103C8T6 开发环境搭建
 - [ ] 安装 STM32duino (Arduino_Core_STM32) 或 PlatformIO
-- [ ] USB-TTL 烧录接线确认 (PA9/PA10)
+- [ ] USB-TTL 烧录接线确认 (PA9/PA10, CH9102 USB-UART via COM11)
+- [x] 芯片丝印确认: **STM32F103C8T6** (Cortex-M3 @ 72MHz, 64KB Flash, 20KB SRAM)
 - [ ] Blink LED 验证工具链
-- [ ] 确认芯片型号（丝印拍照留存）
 
-### 0.2 ESP32 现有代码模块化梳理
+### 0.2 ESP32-WROOM-32U 现有代码模块化梳理
+- [x] 芯片丝印确认: **ESP32-WROOM-32U** (DevKit V1, Xtensa LX6 双核 @ 240MHz)
 - [ ] 标记 MotorTask → 将迁移到 STM32（PWM 直驱代码后续删除，改为 UART MotorCmd）
 - [ ] 标记 FollowLogic → 保留在 ESP32，需重构为差速转向
 - [ ] 标记 VisionBridge → 保留，无需改动
@@ -79,16 +80,19 @@ UART3.write() ──────────────►   ▼               
 ### 0.3 OpenMV 现有代码验证
 - [ ] 在 OpenMV Cam 上运行当前 `OpenMV/main.py`
 - [ ] 确认 YOLO person detection 正常输出
-- [ ] VL53L1X 测距扩展板安装 + I2C 扫描确认设备在线 (addr 0x29)
-- [ ] 运行 `OpenMV/test_vl53l1x.py` 验证：I2C 总线扫描 → 芯片 ID → 连续测距 (100 样本) → 统计分析
+- [x] VL53L1X 测距扩展板安装 + I2C 扫描确认设备在线 (addr 0x29) — **N6 I2C(2) 已通过**
+- [x] 运行 `OpenMV/test_vl53l1x.py` 验证 — **100/100 有效, ~2.9m, 33.3Hz, ±25mm 抖动**
 - [ ] 用 USB 串口监视 VIS 帧格式正确
 - [ ] 记录当前帧率和检测延迟
+
+> **N6 配置**: VL53L1X → I2C(2) (SCL→P4, SDA→P5), addr 0x29, Model ID 0xEACC
+> **H7 Plus 待验证**: Shield 接口接触不良导致 I2C 扫不到设备，需排查硬件连接
 
 ### 0.4 硬件清单确认与采购
 | 硬件 | 数量 | 规格 | 用途 | 状态 |
 |------|------|------|------|------|
-| STM32F103 板 | 1 | — | 实时控制主板 | 已有 |
-| ESP32 板 (UniBoard) | 1 | — | 决策 + WiFi | 已有 |
+| STM32F103C8T6 (Blue Pill) | 1 | Cortex-M3 72MHz, 64KB Flash, 20KB SRAM | 实时控制主板 | 已有 (丝印已确认) |
+| ESP32-WROOM-32U (DevKit V1) | 1 | Xtensa LX6 双核 240MHz, 4MB Flash | 决策 + WiFi | 已有 (丝印已确认) |
 | OpenMV Cam | 1 | H7+ / N6 | 视觉感知 | 已有 |
 | OpenMV 测距扩展板 (VL53L1X) | 1 | ToF, 40-4000mm, ±1mm, 50Hz, I2C | 激光测距替代超声波 | **待采购** (¥136 星瞳官方) |
 | 履带底盘 (含电机) | 1 | 金属履带, 载重 100kg | 执行平台 | **已到货** |

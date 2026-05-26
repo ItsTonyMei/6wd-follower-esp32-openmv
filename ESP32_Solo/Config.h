@@ -6,7 +6,7 @@
 // 所有引脚、阈值、任务参数的单一起源 (single source of truth)
 // ============================================================================
 //
-// 架构: OpenMV (L1感知) → ESP32 (L2决策) → STM32 (L3执行+安全)
+// 架构: OpenMV (L1感知) → ESP32-WROOM-32U DevKit V1 (L2决策) → STM32F103C8T6 (L3执行+安全)
 // 电机 PWM 直驱已迁移至 STM32，ESP32 通过 UART2 MotorCmd 间接控制。
 // 超声波 HC-SR04 已全部移除，距离测量由 OpenMV VL53L1X ToF 测距扩展板 (I2C) 负责。
 // ToF 距离数据 (mm) 通过 VIS 帧 distScore 字段融合传入 ESP32。
