@@ -114,22 +114,6 @@ def capture():
 setup_camera()
 
 # ============================================================================
-# VL53L1X ToF init
-# ============================================================================
-
-TOF_ENABLED = False
-try:
-    from machine import I2C
-    import vl53l1x
-    tof = vl53l1x.VL53L1X(I2C(2))
-    _chip = tof.read_model_id()
-    TOF_ENABLED = (_chip == 0xEACC)
-    print("VL53L1X: OK (I2C2, id=0x%04X)" % _chip if TOF_ENABLED else
-          "VL53L1X: WRONG ID 0x%04X" % _chip)
-except Exception as e:
-    print("VL53L1X: N/A (%s)" % e)
-
-# ============================================================================
 # YOLO Model
 # ============================================================================
 
@@ -154,6 +138,22 @@ if person_idx is None:
 
 uart = pyb.UART(3, 115200)
 uart.init(115200, bits=8, parity=None, stop=1, timeout=1000)
+
+# ============================================================================
+# VL53L1X ToF init — 必须在 UART3 之后 (P4 共用: UART3 TX / I2C(2) SCL)
+# ============================================================================
+
+TOF_ENABLED = False
+try:
+    from machine import I2C
+    import vl53l1x
+    tof = vl53l1x.VL53L1X(I2C(2))
+    _chip = tof.read_model_id()
+    TOF_ENABLED = (_chip == 0xEACC)
+    print("VL53L1X: OK (I2C2, id=0x%04X)" % _chip if TOF_ENABLED else
+          "VL53L1X: WRONG ID 0x%04X" % _chip)
+except Exception as e:
+    print("VL53L1X: N/A (%s)" % e)
 
 # ============================================================================
 # Distance estimation (same logic for both N6 & H7)
@@ -244,12 +244,14 @@ while True:
     img = capture()
     img_w, img_h = img.width(), img.height()
 
-    # Read ToF
-    if TOF_ENABLED:
+    # Read ToF (20Hz — VL53L1X max 50Hz, 避免高频读取导致 ENODEV)
+    if TOF_ENABLED and frame_counter % 2 == 0:  # N6~48fps → ~24Hz ToF
         try:
-            tof_distance = tof.read()
+            d = tof.read()
+            if d > 0:
+                tof_distance = d
         except:
-            tof_distance = 0
+            pass  # 保持上次有效读数
 
     # Detection
     results = model.predict([img])
