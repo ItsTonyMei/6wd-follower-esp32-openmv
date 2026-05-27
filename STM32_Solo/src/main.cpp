@@ -5,14 +5,14 @@
  *   MCU: STM32F103C8T6 (Cortex-M3, 72MHz, 64KB Flash, 20KB SRAM)
  *   USB-UART: CH9102 (USART1: PA9=TX, PA10=RX)
  *   LED2: PA4 (蓝灯, active-LOW) — 500ms 闪烁
- *   BEEP: PA3 (蜂鸣器, active-LOW)
+ *   BEEP: PA3 (蜂鸣器, active-LOW) — 不配置, 保持默认静默
  *   LED1/LED3/LED4: 电源指示灯 (非 GPIO 控制)
  *   烧录: serial @ 115200, -dtr,rts,dtr,,,,
  *
- * 验证: 工具链正常, LED2 以 500ms 周期闪烁, USART1 输出启动信息。
+ * 注意: PA3 不能通过 pinMode(PA3, OUTPUT) 配置, 会触发蜂鸣器长响。
+ *   PA3 和 USART2_RX 复用, pinMode 会触框架初始化 USART2。
  */
 
-// generic 变体默认 Serial→USART2 (PA2/PA3), 覆盖为 USART1 (PA9/PA10)
 #include <Arduino.h>
 HardwareSerial SerialUSART1(PA10, PA9);
 #define Serial SerialUSART1
@@ -28,13 +28,13 @@ void setup() {
     Serial.println("====================================");
     Serial.print("MCU: STM32F103C8T6 @ 72MHz\n");
     Serial.print("Flash: 64KB | SRAM: 20KB\n");
-    Serial.print("Bootloader: v2.2 | RDP: Unlocked\n");
     Serial.print("LED2: PA4 (blue, active-LOW)\n");
-    Serial.print("BEEP: PA3 (active-LOW)\n");
+    Serial.print("BEEP: PA3 (not configured, stays silent)\n");
     Serial.println("====================================\n");
 
     pinMode(PIN_LED2, OUTPUT);
     digitalWrite(PIN_LED2, HIGH);  // LED off (active-LOW)
+    // PA3 不配置 — 避免触发蜂鸣器
 
     Serial.println("[INIT] Blink test started — PA4 LED2, 500ms cycle");
 }
