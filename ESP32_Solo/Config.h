@@ -14,27 +14,24 @@
 // 供电: 48V 89Ah 锂电池 → 48V→5V 10A 防水降压 → ESP32 (5V USB)
 
 // ─── UART 引脚分配 ───
-// ┌──────────┬────────────────┬──────────────────────────────────┐
-// │  接口     │ 引脚            │ 用途                             │
-// ├──────────┼────────────────┼──────────────────────────────────┤
-// │ UART0    │ GPIO1/3 (固定)  │ USB Serial — debug/monitor       │
-// │ UART1    │ RX=15, TX=4     │ ELRS 接收机 CRSF 协议 (420k baud)│
-// │ UART2    │ TX=17, RX=16    │ STM32 USART1 双向 (115200)       │
-// │ (Phase0) │ ESP8266 桥接     │ VIS 接收暂由 ESP8266 代理        │
-// └──────────┴────────────────┴──────────────────────────────────┘
-// 注意: ESP32 Serial2 (GPIO16/17) 硬件不稳定, VIS 接收暂用 ESP8266 Bridge
+// ┌──────────┬────────────────┬──────────────────────────────────────────┐
+// │  接口     │ 引脚            │ 用途                                     │
+// ├──────────┼────────────────┼──────────────────────────────────────────┤
+// │ UART0    │ GPIO1/3 (固定)  │ USB Serial — debug/monitor               │
+// │ UART1    │ RX=15, TX=4     │ ELRS 接收机 CRSF 协议 (420k baud)        │
+// │ UART2    │ TX=17, RX=16    │ STM32 USART3 双向 MotorCmd+遥测 (115200) │
+// │ (Phase0) │ ESP8266 WiFi    │ VIS 数据经 ESP8266 Bridge 转发            │
+// └──────────┴────────────────┴──────────────────────────────────────────┘
 
 // ─── UART1: ELRS/CRSF 遥控接收机 ───
 constexpr uint8_t PIN_CRSF_RX       = 15;   // ← ELRS RX CRSF TX
 constexpr uint8_t PIN_CRSF_TX       = 4;    // → ELRS RX CRSF RX (双向遥测)
 constexpr uint32_t CRSF_BAUD        = 420000;
 
-// ─── SoftSerial: OpenMV VisionBridge (单向上行) ───
-constexpr uint8_t PIN_VIS_RX        = 16;   // ← OpenMV P0 SW UART (Serial2 RX)
-
 // ─── UART2: STM32 双向通信 (MotorCmd 下行 + 遥测上行) ───
-constexpr uint8_t PIN_STM32_TX      = 17;   // → STM32 USART1 RX
-constexpr uint8_t PIN_STM32_RX      = 16;   // ← STM32 USART1 TX
+// Phase 0: VIS 经 ESP8266 WiFi 桥接, Serial2 专用于 STM32 通信
+constexpr uint8_t PIN_STM32_TX      = 17;   // → STM32 USART3 RX (PB11)
+constexpr uint8_t PIN_STM32_RX      = 16;   // ← STM32 USART3 TX (PB10)
 constexpr uint32_t STM32_UART_BAUD  = 115200;
 
 // ─── CRSF 遥控通道映射 (Jumper T14 EdgeTX Mixer) ───
@@ -89,16 +86,23 @@ constexpr float DIST_NEAR        = 0.80f;  // > this → 全速后退
 constexpr float DIST_HYSTERESIS  = 0.05f;  // 滞后带（防振荡）
 constexpr int   DIST_STABLE_FRAMES = 3;    // 状态切换需维持帧数
 
+// ─── HC6060A 混控款电调 PWM 参数 ───
+// 白线=油门, 黄线=转向, 电调内部处理差速混控
+// 50Hz 标准舵机 PWM: 1000-2000μs, 中位 1500μs
+constexpr uint16_t PWM_NEUTRAL         = 1500;
+constexpr uint16_t PWM_MIN             = 1000;
+constexpr uint16_t PWM_MAX             = 2000;
+constexpr uint16_t MAX_THROTTLE_OFFSET = 400;   // 最大油门偏中位 (1500±400 = 1100~1900μs)
+constexpr uint16_t MAX_STEER_OFFSET    = 300;   // 最大转向偏中位 (1500±300 = 1200~1800μs)
+constexpr uint16_t THROTTLE_DEADBAND   = 20;    // 油门中位死区 (±20μs, 防止漂移)
+
 // ─── 履带差速转向参数 ───
-constexpr float TURN_KP          = 1.0f;   // 转向 P 增益 (cx 偏差 → pwm_diff)
-constexpr uint8_t MAX_BASE_PWM   = 200;    // 最大直线速度 (0-255)
-constexpr uint8_t MIN_BASE_PWM   = 60;     // 最小直线速度（低于此值可能无法克服履带阻力）
+constexpr float TURN_KP          = 2.0f;   // 转向 P 增益 (cx 偏差像素 → steering μs)
+constexpr int   CX_MIN_OFFSET    = 15;     // cx 偏差绝对值 < this → 不转向 (中心死区)
 
-// ─── MotorCmd: FreeRTOS queue 元素 (2 字节, 零 heap 分配) ───
-// FWD=直线前进, REV=直线后退, LFT=原地左转, RGT=原地右转, STOP=停止
-enum class CarCmd : uint8_t { STOP, FWD, REV, LFT, RGT };
-
+// ─── MotorCmd: FreeRTOS queue 元素 (4 字节, 零 heap 分配) ───
+// HC6060A 混控款: throttle/steering 直接对应白线/黄线 PWM 脉宽 (μs)
 struct MotorCmd {
-    CarCmd   cmd;
-    uint8_t  pwm;    // 0-255
+    uint16_t throttle;  // 白线油门 (1000-2000μs, 1500=停止)
+    uint16_t steering;  // 黄线转向 (1000-2000μs, 1500=直行)
 };

@@ -2,56 +2,73 @@
 
 ## Project Overview
 
-金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + VL53L1X ToF 激光测距 + 视觉距离融合; **ESP32** 负责 FollowLogic 决策 + ELRS/CRSF 遥控接收; **STM32F103** 负责硬实时电机控制 + 安全保护。Phase 0 阶段 ESP32 的 Serial2 (GPIO16/17) 硬件异常，VIS 接收 + WiFi Dashboard 暂由 **ESP8266 (NodeMCU V3)** 桥接。OpenMV → ESP8266 通过 P0 SW UART 4800 baud (VIS 协议), ESP8266 → ESP32 通过内部 WiFi 转发; ESP32 ↔ STM32 通过 UART2 (MotorCmd + 遥测协议), ELRS 接收机 → ESP32 通过 UART1 (CRSF 协议 420k baud)。
+金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + VL53L1X ToF 激光测距 + 视觉距离融合; **ESP8266** 负责 FollowLogic 决策 + WiFi Dashboard; **STM32F103** 负责硬实时电机控制 + 安全保护。ESP32 已废弃 — ESP8266 (NodeMCU V3) 替代其全部功能。
+OpenMV → ESP8266 通过 P0 SW UART 4800 baud (VIS ASCII 协议), ESP8266 ↔ STM32 通过 UART0 swapped (GPIO15/GPIO13, 115200 baud, 6-byte MotorCmd 下行 + 遥测上行)。
 
 ## Hardware Platform
 
 ### 动力系统
 - **电池**: 48V 89Ah 锂电池
-- **电机电调**: 防水 48V 双向双路差速有刷电机电调 (2× 48V 45A 500W)
-- **控制供电**: 48V → 5V 10A 防水降压模块 → ESP32 + STM32 + OpenMV
+- **电机电调**: HC6060A 混控款 双向双路差速有刷电调 (白线=油门, 黄线=转向, 内置混控)
+- **控制供电**: 48V → 5V 10A 防水降压模块 → ESP8266 + STM32 + OpenMV
 
 ### 控制板
 | 板卡 | 角色 | 关键外设 |
 |------|------|---------|
 | OpenMV Cam N6 | L1 感知层 | YOLOv8n NPU (45FPS) + VL53L1X ToF (I2C2, P4/P5) + VIS P0 SW UART |
-| ESP8266 NodeMCU V3 (ESP-12E) | L2 桥接层 (Phase 0) | WiFi Dashboard + VIS 接收 (D5/GPIO14, SoftwareSerial 4800bd) |
-| ESP32-WROOM-32U (DevKit V1) | L2 决策层 (Phase 1+) | ESP32-D0WD-V3 rev3.1, FollowLogic + ELRS/CRSF (UART1) + STM32 (UART2) |
-| STM32F103C8T6 (定制板) | L3 执行安全层 | USART1 (PA9/PA10) ↔ ESP32, 2ch RC PWM → 电调, 急停 GPIO, ADC |
+| ESP8266 NodeMCU V3 (ESP-12E) | L2 决策层 | FollowLogic + WiFi Dashboard + VIS 接收 (D5/GPIO14) + STM32 (D7/D8) |
+| STM32F103C8T6 (定制板) | L3 执行安全层 | PS2 (PB12-PB15) + USART3 ↔ ESP8266, TIM4 PWM → 电调, 急停 GPIO |
+
+> ESP32-WROOM-32U (DevKit V1) 已废弃。详见 `ESP32_Solo/DEPRECATED.md`。
 
 ### STM32 定制板详情
 - **主控**: STM32F103C8T6 (Cortex-M3, 72MHz, 64KB Flash, 20KB SRAM)
 - **USB-UART**: CH9102 via USB-C, 连 USART1 (PA9=TX, PA10=RX)
 - **烧录**: PlatformIO serial @ 115200, 序列 `-dtr,rts,dtr,,,,` (DTR→NRST, RTS→BOOT0)
 - **调试接口**: SWD (GND, PA14/SWCLK, 3V3, PA13/SWDIO)
+- **PS2 手柄**: CN4 6P (PB12=CLK, PB13=CS, PB14=CMD, PB15=DATA), 5V 供电 (WHEELTEC 定义)
 - **电源**: USB-C 供电, 板载 DC-DC 降压, 电源开关 + LED1(电源指示, 红色)
 - **用户外设**:
-  - LED2 (蓝色, PA4, active-LOW) — 用户可编程
-  - BEEP 蜂鸣器 (PA3, active-LOW) — 用户可编程
+  - LED2 (蓝色, PA4, active-LOW) — 心跳指示
+  - BEEP 蜂鸣器 (PA3, 经跳线→S8050, active-HIGH) — 用户可编程
   - User 按键 + Reset 按键
-  - PB10/PB11 底部端子引出
+  - PB10/PB11 底部端子引出 (USART3, 连 ESP8266)
 - **其他 LED**: LED3/LED4 (红色) — 电源指示灯, 非 GPIO 控制
 
 ### 通信链路
 - VL53L1X ToF → OpenMV N6: I2C(2) (SCL=P4, SDA=P5), addr 0x29, 40-4000mm, ±1mm, max 50Hz
 - OpenMV N6 → ESP8266: P0 SW UART (4800 baud) → D5 (GPIO14) SoftwareSerial, VIS ASCII 协议 (XOR checksum)
-- ESP8266 → ESP32: WiFi 内部转发 VIS 数据 (Phase 0 临时方案)
-- ESP32 → STM32: UART2 TX=GPIO17 RX=GPIO16, 115200, MotorCmd (下行) + 遥测 (上行)
-- STM32 → 电调: 2ch 标准 RC PWM (1000-2000μs, 50Hz), 中位 1500μs=STOP
-- ELRS RX → ESP32: UART1 RX=GPIO15 TX=GPIO4, CRSF 协议 420k baud, 16ch × 11-bit
+- ESP8266 → STM32: UART0 swapped (TX=D8/GPIO15, RX=D7/GPIO13) → STM32 USART3 (PB10/PB11), 115200
+- ESP8266 → STM32 下行协议: 6-byte frame: `[0xAA] [th_lo] [th_hi] [st_lo] [st_hi] [CRC8]`
+- STM32 → 电调: TIM4 CH3 (PB8) = 黄线(转向), CH4 (PB9) = 白线(油门), 50Hz PWM, 1000-2000μs
 
-### ESP32 UART 分配
-| UART | 引脚 | 设备 | 波特率 | 方向 |
+### ESP8266 引脚分配
+| 引脚 | 功能 | 设备 | 波特率 | 方向 |
 |------|------|------|--------|------|
-| UART0 | GPIO1/3 | USB Serial (CP2102) | 115200 | 双向 — debug/monitor |
-| UART1 | RX=15, TX=4 | ELRS 接收机 (CRSF) | 420k | 双向 — RC通道+遥测 |
-| UART2 | TX=17, RX=16 | STM32F103 | 115200 | 双向 — MotorCmd+遥测 |
+| D5 (GPIO14) | SoftwareSerial RX | OpenMV P0 SW UART | 4800 | 单向 RX — VIS 帧 |
+| D8 (GPIO15) | UART0 TX (swapped) | STM32 PB11 (USART3 RX) | 115200 | → MotorCmd 下行 |
+| D7 (GPIO13) | UART0 RX (swapped) | STM32 PB10 (USART3 TX) | 115200 | ← 遥测上行 |
+| GND | 共地 | STM32 GND | — | — |
 
-### ESP8266 UART 分配 (Phase 0 桥接)
-| UART | 引脚 | 设备 | 波特率 | 方向 |
-|------|------|------|--------|------|
-| UART0 | GPIO1/3 | USB Serial (CH340) | 115200 | debug/monitor |
-| SW Serial | RX=14 (D5) | OpenMV N6 (P0 SW UART) | 4800 | 单向 RX — VIS 帧 |
+> **`Serial.swap()`**: UART0 从 GPIO1/3 重映射到 GPIO15/13。原 USB-Serial (CH340) 不可用 — 调试通过 WiFi Dashboard。
+> **GPIO15 启动**: NodeMCU 板载 10k 下拉, 正常启动。STM32 PB11 为输入态不驱动, 无冲突。
+
+### STM32 引脚分配 (C06B 板)
+| 引脚 | 功能 | 连接 |
+|------|------|------|
+| PA9/PA10 | USART1 (CH9102 USB-UART) | 烧录 + debug console |
+| PB10/PB11 | USART3 | ← ESP8266 D7/D8 |
+| PB8 (TIM4_CH3) | ESC 黄线 (转向) | H6 舵机接口 (5V 组, 220Ω) |
+| PB9 (TIM4_CH4) | ESC 白线 (油门) | H7 舵机接口 (5V 组, 220Ω) |
+| PB12 | PS2 CLK (SCK) | CN4 pin 6 |
+| PB13 | PS2 CS (ATTN) | CN4 pin 5 |
+| PB14 | PS2 CMD (MOSI) | CN4 pin 4 |
+| PB15 | PS2 DATA (MISO) | CN4 pin 3 |
+| PA3 | BEEP 蜂鸣器 (经跳线, active-HIGH) | S8050 驱动 |
+| PA4 | LED2 (active-LOW) | 心跳/模式指示 |
+
+**控制优先级**: PS2 手柄 (接入时) > ESP8266 串口。PS2 START 键切换电机解锁/锁定。
+PS2 左摇杆: Y(上下)=油门, X(左右)=转向。LED2 快闪(100ms)=PS2 模式, 慢闪(500ms)=ESP8266 模式。
 
 ### OpenMV N6 引脚分配
 | 引脚 | 功能 | 说明 |
@@ -62,55 +79,54 @@
 
 ## Language Convention
 
-**注释和文档使用中文 + 英文专业名词。** 技术术语 (YOLO, PWM, FreeRTOS, UART, GPIO, CRSF, ELRS, CAN, CRC, ESC, BMS, ToF, VL53L1X, I2C, model, frame, packet 等) 保持英文；解释性文字、架构说明、注意事项使用中文。
+**注释和文档使用中文 + 英文专业名词。** 技术术语 (YOLO, PWM, UART, GPIO, CRC, ESC, ToF, VL53L1X, I2C 等) 保持英文；解释性文字、架构说明、注意事项使用中文。
 
 ## Build System
 
-- **ESP32**: ESP32-WROOM-32U (DevKit V1), Arduino IDE 或 PlatformIO。入口: `ESP32_Solo/ESP32_Solo.ino`。基于 Arduino framework (底层 ESP-IDF)。
-- **ESP8266**: NodeMCU V3 (ESP-12E), Arduino IDE。入口: `ESP8266_Bridge/` (Phase 0 VIS+Dashboard 桥接)。基于 ESP8266 Arduino core 3.1.2。
-- **STM32**: STM32F103C8T6 (定制板, 非 Blue Pill), Arduino IDE (STM32duino) 或 PlatformIO (板: `genericSTM32F103CB`)。基于 STM32Duino core。
+- **ESP8266**: NodeMCU V3 (ESP-12E), Arduino IDE。入口: `ESP8266_Bridge/ESP8266_Bridge.ino`。基于 ESP8266 Arduino core 3.1.2。
+- **STM32**: STM32F103C8T6 (定制板), PlatformIO (板: `genericSTM32F103CB`)。入口: `STM32_Solo/src/main.cpp`。
   - **Serial 注意**: generic 变体默认 `Serial`→USART2 (PA2/PA3)。定制板 CH9102 连接 USART1 (PA9/PA10)，需用 `HardwareSerial SerialUSART1(PA10, PA9)` 覆盖。
+  - **Serial3 (ESP8266 通信)**: USART3 on PB10(TX)/PB11(RX), 115200 baud, 6-byte MotorCmd 下行帧。
+  - **ESC PWM**: TIM4 CH3=PB8(白线油门), CH4=PB9(黄线转向), 50Hz, 1000-2000μs。
 - **OpenMV**: MicroPython，直接运行于 OpenMV Cam。无编译步骤 — 将 `.py` 文件复制到摄像头。
+- **ESP32** (已废弃): `ESP32_Solo/` 保留作为参考实现，不再构建或部署。详见 `ESP32_Solo/DEPRECATED.md`。
 
 ## Architecture Conventions
 
-- **三层架构**: L1 OpenMV (感知) → L2 ESP32 (决策) → L3 STM32 (执行+安全)。
-- **安全优先**: 5 条独立关断路径 — 硬线急停、过流保护、命令超时、遥控失联、视觉超时。L3 的安全机制独立于 L1/L2。
-- ESP32 上 FreeRTOS tasks: FollowLogic + VisionBridge on Core 0, WebTask (Dashboard) on Core 1。
-- Task 间通信通过 FreeRTOS queue (`MotorCmd` struct, 2 bytes)。
-- `DataAggregator` 封装互斥锁，统一管理 CarState + VisState + STM32 遥测数据。
-- 主循环无动态分配 — 固定大小 queue 和栈分配 struct。
-- `Config.h` 是引脚、阈值、task 参数的单一数据源 (single source of truth)。
-- 电机控制: STM32 输出标准 RC PWM (1000-2000μs) 到电调，电调内部处理 H-bridge 换向和死区。
-- Motor command 为 `enum class CarCmd : uint8_t`。
+- **三层架构**: L1 OpenMV (感知) → L2 ESP8266 (决策+WiFi) → L3 STM32 (执行+安全)。
+- **安全优先**: 5 条独立关断路径 — 硬线急停、过流保护、命令超时、视觉超时 (已实现); 遥控失联 (Phase 1+)。
+- ESP8266 单线程主循环: VIS 接收 → FollowLogic → MotorCmd 下行 (50ms 间隔) + HTTP server。
+- 无动态分配 — 固定大小 buffer 和栈分配 struct。
+- `Config.h` 是引脚、阈值、参数的单一数据源 (single source of truth)。
+- 电机控制: STM32 TIM4 CH3(PB8)→黄线(转向) + CH4(PB9)→白线(油门), 50Hz PWM。HC6060A 混控款电调内部处理差速混控。
+- `MotorCmd` 为 `struct { uint16_t throttle; uint16_t steering; }`, 单位 μs (1000-2000, 中位 1500)。
 
 ## Code Style
 
-- C++ for ESP32 & STM32 (`.cpp`/`.h`), MicroPython for OpenMV (`.py`)。
+- C++ for ESP8266 & STM32 (`.cpp`/`.h`/`.ino`), MicroPython for OpenMV (`.py`)。
 - 引脚分配为 `constexpr` in `Config.h`。
-- `FollowLogic::update()` 直接返回 `MotorCmd` struct，不再使用字符串协议。
+- `FollowLogic::update()` 返回 `MotorCmd` struct (throttle + steering in μs)。
 - OpenMV 使用 assert 验证配置参数阈值。
 
 ## Safety Architecture
 
-| # | 触发源 | 实现层 | 机制 |
-|---|--------|--------|------|
-| 1 | 急停按钮 | STM32 GPIO + 继电器 | 物理断开 48V 动力电 |
-| 2 | 过流检测 | STM32 ADC | 电流超阈值 → PWM 归零 |
-| 3 | 命令超时 | STM32 SysTick | 500ms 无命令 → STOP |
-| 4 | 遥控失联 | ESP32 CRSF | ELRS link lost → STOP |
-| 5 | 视觉超时 | ESP32 VisionBridge | VIS_TIMEOUT → 降级 STOP |
+| # | 触发源 | 实现层 | 机制 | 状态 |
+|---|--------|--------|------|------|
+| 1 | 急停按钮 | STM32 GPIO + 继电器 | 物理断开 48V 动力电 | 未实现 |
+| 2 | 过流检测 | STM32 ADC | 电流超阈值 → PWM 归零 | 未实现 |
+| 3 | 命令超时 | STM32 SysTick | 500ms 无命令 → STOP (1500μs) | 已实现 |
+| 4 | 遥控失联 | — | CRSF link lost → STOP | Phase 1+ |
+| 5 | 视觉超时 | ESP8266 主循环 | VIS_TIMEOUT=700ms → 降级 STOP | 已实现 |
 
 ## Testing
 
-- ESP32 unit tests in `Test/ESP32/` — PC 端 GCC 编译, `Test/ArduinoMock.h` 提供类型桩。
+- ESP8266 FollowLogic tests in `Test/ESP32/FollowLogic_test.cpp` — PC 端 GCC 编译, 算法与 ESP8266 一致。
 - OpenMV tests in `Test/OpenMV/` — PC 端 Python/pytest 运行, 使用纯函数副本避免硬件依赖。
 
 ## Available Agents & Skills
 
-- `cortex-debugger`: ESP32/STM32 firmware crash analysis (Guru Meditation, HardFault, stack overflow, FreeRTOS deadlocks)
-- `protocol-analyzer`: UART/CRSF protocol debugging (VIS frames, CRSF parsing, checksum verification)
-- `esp32-firmware-engineer`: ESP-IDF specific guidance (build/flash/monitor, partition tables, sdkconfig, power optimization)
+- `cortex-debugger`: STM32 firmware crash analysis (HardFault, stack overflow, interrupt conflicts)
+- `protocol-analyzer`: UART protocol debugging (VIS frames, MotorCmd frames, checksum verification)
 
 ## Git LFS
 

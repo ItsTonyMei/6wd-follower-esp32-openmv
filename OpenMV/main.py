@@ -25,7 +25,7 @@ else:
     _MODEL_PATH = "/rom/yolo_lc_192.tflite"
     _CAM_W, _CAM_H = 320, 240
 
-# VIS 协议坐标空间 (ESP32 FollowLogic 期望 192x192)
+# VIS 协议坐标空间 (ESP8266 FollowLogic 期望 192x192)
 _VIS_W, _VIS_H = 192, 192
 _VIS_CX, _VIS_CY = 96, 96
 
@@ -302,7 +302,7 @@ while True:
     draw_debug(img, clock.fps(), person_rect, score if detections else 0,
                dist_category, dist_score)
 
-    # VIS output (scale coords to 192x192 for ESP32 FollowLogic compatibility)
+    # VIS output (scale coords to 192x192 for ESP8266 FollowLogic compatibility)
     if time.ticks_diff(time.ticks_ms(), last_vis_ms) >= VIS_INTERVAL_MS:
         last_vis_ms = now_ms
         if person_rect:

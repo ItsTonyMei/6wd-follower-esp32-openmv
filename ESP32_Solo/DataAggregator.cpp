@@ -1,4 +1,5 @@
 #include "DataAggregator.h"
+#include "Config.h"
 #include "FollowLogic.h"
 #include <cstdio>
 
@@ -46,17 +47,16 @@ String DataAggregator::getJson() {
     char buf[512];
     int len = snprintf(buf, sizeof(buf),
         "{"
-        "\"car\":{\"v\":%d,\"l\":%d,\"r\":%d,\"act\":\"%s\",\"ts\":%lu},"
+        "\"car\":{\"v\":%d,\"th\":%u,\"st\":%u,\"ts\":%lu},"
         "\"vis\":{\"v\":%d,\"hp\":%d,\"cx\":%d,\"cy\":%d,\"w\":%d,\"h\":%d,"
         "\"conf\":%.2f,\"type\":\"%s\",\"ds\":%.2f,\"tof\":%d,\"fy\":%d,\"ts\":%lu},"
         "\"snap\":0,"
         "\"cfg\":{\"ds_stop\":%.2f,\"ds_slow\":%.2f,\"ds_far\":%.2f}"
         "}",
-        // car
+        // car (throttle, steering in μs)
         carState_.valid ? 1 : 0,
-        carState_.leftPwm,
-        carState_.rightPwm,
-        carState_.action,
+        carState_.throttle,
+        carState_.steering,
         carState_.timestamp,
         // vis
         visState_.valid ? 1 : 0,

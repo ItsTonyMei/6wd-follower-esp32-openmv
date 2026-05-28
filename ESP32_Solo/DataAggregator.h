@@ -6,12 +6,12 @@
 // ============================================================================
 // CarState: 车辆运行状态（MotorTask 写入）
 // CarState: vehicle running state (written by MotorTask)
+// HC6060A 混控款: throttle/steering 为白线/黄线 PWM 脉宽 (μs)
 // ============================================================================
 struct CarState {
     bool valid;
-    int leftPwm;            // 左轮 PWM (0-255)
-    int rightPwm;           // 右轮 PWM (0-255)
-    char action[8];         // 当前动作: STOP / FWD / LFT / RGT
+    uint16_t throttle;      // 白线油门脉宽 (1000-2000μs, 1500=停止)
+    uint16_t steering;      // 黄线转向脉宽 (1000-2000μs, 1500=直行)
     unsigned long timestamp;
 };
 
@@ -57,7 +57,7 @@ public:
     String getJson();
 
 private:
-    CarState carState_ = {false, 0, 0, "", 0};
+    CarState carState_ = {false, 1500, 1500, 0};
     VisState visState_ = {false, 0, 0, 0, 0, 0.0f, "", 0.0f, 0, 0, false, 0};
 
     SemaphoreHandle_t mutex_ = nullptr;

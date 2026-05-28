@@ -90,8 +90,8 @@ h2{font-size:14px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
     </div>
   </div>
   <div class="grid2" style="margin-top:8px">
-    <div><div class="lbl">左 PWM</div><div class="val" id="car-l">0</div></div>
-    <div><div class="lbl">右 PWM</div><div class="val" id="car-r">0</div></div>
+    <div><div class="lbl">油门 (白线)</div><div class="val" id="car-th">1500 μs</div></div>
+    <div><div class="lbl">转向 (黄线)</div><div class="val" id="car-st">1500 μs</div></div>
   </div>
 </div>
 
@@ -139,13 +139,18 @@ function update() {
     document.getElementById('vis-box').textContent=v.hp?v.w+'x'+v.h+' @('+v.cx+','+v.cy+')':'--';
 
     // 车辆
-    let act=(c.act||'STOP'), ae=document.getElementById('car-act');
+    let th=c.th||1500, st=c.st||1500;
+    let act='STOP';
+    if(th>1520) act='FWD'; else if(th<1480) act='REV';
+    if(st>1520) act+=act==='STOP'?'RGT':'+RGT';
+    else if(st<1480) act+=act==='STOP'?'LFT':'+LFT';
+    let ae=document.getElementById('car-act');
     ae.textContent=act;
-    ae.className='badge '+(act==='STOP'?'idle':act.indexOf('AVD')>=0?'warn':'ok');
+    ae.className='badge '+(act==='STOP'?'idle':(act.indexOf('+')>=0||act==='REV')?'warn':'ok');
     document.getElementById('car-ok').textContent=c.v?'OK':'--';
     document.getElementById('car-ok').className='badge '+(c.v?'ok':'idle');
-    document.getElementById('car-l').textContent=c.l||0;
-    document.getElementById('car-r').textContent=c.r||0;
+    document.getElementById('car-th').textContent=th+' μs';
+    document.getElementById('car-st').textContent=st+' μs';
 
     // 系统
     let up=sys.uptime||0, m=Math.floor(up/60000), s=Math.floor((up%60000)/1000);
