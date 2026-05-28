@@ -41,24 +41,14 @@ constexpr uint8_t PIN_LED2 = PA4;
 HardwareSerial SerialUSART1(PA10, PA9);
 #define Serial SerialUSART1
 
-// ─── USART3: ESP8266 通信 ───
-HardwareSerial Serial3(PB11, PB10);
-
 // ─── 全局控制状态 ───
 static uint16_t  g_throttle   = PWM_NEUTRAL;
 static uint16_t  g_steering   = PWM_NEUTRAL;
 static uint32_t  g_lastCmdMs  = 0;
 static bool      g_escReady   = false;
 static bool      g_motorArmed = false;
-static uint8_t   g_ps2_rx     = 128;
-static uint8_t   g_ps2_ry     = 128;
 static uint8_t   g_ps2_lx     = 128;
-static uint8_t   g_ps2_ly     = 128;  // PS2 START 切换
-
-// ─── ESP8266 下行协议 ───
-static uint8_t  rxBuf[6];
-static uint8_t  rxIdx    = 0;
-static bool     rxSynced = false;
+static uint8_t   g_ps2_ly     = 128;
 
 // ─── PS2 引脚宏 (C06B CN4: PB15=DATA, PB14=CMD, PB13=CS, PB12=CLK) ───
 // 来源: WHEELTEC C06B PS2 示例源码 (pstwo.h)
@@ -69,17 +59,6 @@ static bool     rxSynced = false;
 #define PS2_CS_L    GPIOB->BRR  = (1 << 13)
 #define PS2_CLK_H   GPIOB->BSRR = (1 << 12)
 #define PS2_CLK_L   GPIOB->BRR  = (1 << 12)
-
-// ─── CRC8 (poly 0x07, 与 ESP8266 一致) ───
-static uint8_t crc8(const uint8_t *data, size_t len) {
-    uint8_t crc = 0;
-    while (len--) {
-        crc ^= *data++;
-        for (uint8_t i = 0; i < 8; i++)
-            crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : crc << 1;
-    }
-    return crc;
-}
 
 // ═══════════════════════════════════════════════════════════════
 // ESC PWM (TIM4: PB8=黄线转向, PB9=白线油门, 50Hz)
@@ -239,33 +218,6 @@ static uint16_t joyToSteering(uint8_t lx) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ESP8266 协议处理
-// ═══════════════════════════════════════════════════════════════
-
-static void handleFrame(const uint8_t *buf) {
-    uint8_t expected = crc8(&buf[1], 4);
-    if (buf[5] != expected) return;
-
-    uint16_t throttle = (uint16_t)buf[1] | ((uint16_t)buf[2] << 8);
-    uint16_t steering = (uint16_t)buf[3] | ((uint16_t)buf[4] << 8);
-
-    g_throttle  = throttle;
-    g_steering  = steering;
-    g_lastCmdMs = millis();
-
-    if (g_escReady && g_motorArmed) {
-        escSet(g_throttle, g_steering);
-    }
-}
-
-static void checkTimeout() {
-    if (!g_escReady) return;
-    if (millis() - g_lastCmdMs > CMD_TIMEOUT_MS) {
-        escSet(PWM_NEUTRAL, PWM_NEUTRAL);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
 // 蜂鸣器 (PA3, 经跳线->S8050, active-HIGH)
 // ═══════════════════════════════════════════════════════════════
 
@@ -286,30 +238,25 @@ void setup() {
     Serial.begin(115200);
     delay(100);
 
-    Serial.println("\n==============================================");
-    Serial.println("STM32F103C8T6 — L3 HC6060A ESC Controller");
-    Serial.println("  PS2 手柄: CN4 (PB12-PB15)");
-    Serial.println("  ESP8266:  USART3 (PB10/PB11)");
-    Serial.println("==============================================");
+    Serial.println("\nSTM32 HC6060A PS2 Controller");
 
     pinMode(PIN_LED2, OUTPUT);
     digitalWrite(PIN_LED2, HIGH);
 
     escInit();
-    Serial.print("[INIT] ESC 自检等待 "); Serial.print(ESC_INIT_DELAY);
-    Serial.println("ms...");
+    Serial.print("ESC: wait "); Serial.print(ESC_INIT_DELAY); Serial.println("ms");
 
     ps2Init();
-    Serial.print("[PS2] 初始化... ");
-    if (ps2Config()) {
-        Serial.println("OK (analog mode)");
-    } else {
-        Serial.println("未检测到手柄, 将使用 ESP8266 模式");
-    }
+    Serial.print("PS2: ");
+    Serial.println(ps2Config() ? "OK" : "not found");
 
-    Serial3.begin(115200);
-    Serial.println("[UART] Serial3 (PB10/PB11) @ 115200");
-    Serial.println("[READY] 按 PS2 START 解锁电机\n");
+    // 显式确保锁定状态 (防止静态变量初始化异常)
+    g_motorArmed = false;
+    g_escReady   = false;
+    g_lastCmdMs  = millis();
+    escSet(PWM_NEUTRAL, PWM_NEUTRAL);
+
+    Serial.println("READY. Press START to arm.\n");
 }
 
 void loop() {
@@ -330,21 +277,42 @@ void loop() {
             uint8_t  ry = buf[5];
             uint8_t  lx = buf[6];
             uint8_t  ly = buf[7];
-            g_ps2_rx = rx;
-            g_ps2_ry = ry;
             g_ps2_lx = lx;
             g_ps2_ly = ly;
 
-            // START 按钮切换电机解锁/锁定
-            static bool lastStart = true;
-            bool startPressed = (buttons2 & 0x08);
-            if (startPressed && !lastStart) {
-                g_motorArmed = !g_motorArmed;
-                Serial.print("[PS2] 电机 ");
-                Serial.println(g_motorArmed ? "解锁 (ARMED)" : "锁定 (DISARMED)");
-                if (g_motorArmed) beepArm(); else { beepDisarm(); escSet(PWM_NEUTRAL, PWM_NEUTRAL); }
+            // 控制器休眠检测: 数据连续 10s 完全不变 → 判定休眠
+            static uint8_t  lastLx = 0, lastLy = 0, lastBt2 = 0;
+            static uint16_t freezeCnt = 0;
+            if (lx == lastLx && ly == lastLy && buttons2 == lastBt2) {
+                freezeCnt++;
+                if (freezeCnt > 500 && g_motorArmed) {  // 10s @ 50Hz
+                    g_motorArmed = false;
+                    escSet(PWM_NEUTRAL, PWM_NEUTRAL);
+                    beepDisarm();
+                    Serial.println("[PS2] 控制器休眠, 自动锁定!");
+                }
+            } else {
+                lastLx = lx; lastLy = ly; lastBt2 = buttons2;
+                freezeCnt = 0;
             }
-            lastStart = startPressed;
+
+            // START 按钮: 首次连接后跳过 3 次轮询, 防止静态变量初始化异常误触发
+            static uint8_t  startupSkip = 3;
+            static bool     lastStart   = true;
+            if (startupSkip > 0) {
+                startupSkip--;
+                lastStart = (buttons2 & 0x08);  // 同步初始状态
+            } else {
+                bool startPressed = (buttons2 & 0x08);
+                if (startPressed && !lastStart) {
+                    g_motorArmed = !g_motorArmed;
+                    freezeCnt = 0;
+                    Serial.print("[PS2] 电机 ");
+                    Serial.println(g_motorArmed ? "解锁 (ARMED)" : "锁定 (DISARMED)");
+                    if (g_motorArmed) beepArm(); else { beepDisarm(); escSet(PWM_NEUTRAL, PWM_NEUTRAL); }
+                }
+                lastStart = startPressed;
+            }
 
             // PS2 模式: 右摇杆上下(LX)=油门, 左摇杆左右(LY)=转向
             if (g_motorArmed && g_escReady) {
@@ -378,23 +346,9 @@ void loop() {
         }
     }
 
-    // ─── 2. 处理 ESP8266 下行 (仅当 PS2 未连接时生效) ───
-    while (Serial3.available() > 0) {
-        uint8_t c = Serial3.read();
-
-        if (!rxSynced) {
-            if (c == 0xAA) { rxBuf[0] = c; rxIdx = 1; rxSynced = true; }
-        } else {
-            rxBuf[rxIdx++] = c;
-            if (rxIdx >= 6) {
-                if (!ps2Ok) handleFrame(rxBuf);  // PS2 未连接时才处理 ESP8266
-                rxSynced = false;
-            }
-        }
-    }
-
-    // ─── 3. 命令超时 (PS2 在线时不超时; 无PS2时启用) ───
-    if (!ps2Ok) checkTimeout();
+    // ─── 2. 命令超时 (无 PS2 时归中) ───
+    if (!ps2Ok && g_escReady && millis() - g_lastCmdMs > CMD_TIMEOUT_MS)
+        escSet(PWM_NEUTRAL, PWM_NEUTRAL);
 
     // ─── 4. ESC 自检计时 ───
     static bool escDelayDone = false;
@@ -405,36 +359,32 @@ void loop() {
         Serial.println("[ESC] 自检完成 — 请按 PS2 START 解锁");
     }
 
-    // ─── 5. LED2 模式指示 ───
-    // 快闪 (100ms) = PS2 已解锁  慢闪 (250ms) = PS2 已锁定  很慢 (500ms) = 无 PS2
-    static uint32_t lastLedMs = 0;
-    static bool     ledOn     = false;
-    uint32_t ledInterval;
-    if (!ps2Ok)               ledInterval = 500;  // 无 PS2
-    else if (g_motorArmed)    ledInterval = 100;  // PS2 已解锁
-    else                      ledInterval = 250;  // PS2 已锁定
+    // ─── 5. LED: 快闪=ARMED, 中闪=LOCKED, 慢闪=无PS2 ───
+    static uint32_t lastLedMs;
+    static bool     ledOn;
+    uint32_t iv = !ps2Ok ? 500 : g_motorArmed ? 100 : 250;
+    if (now - lastLedMs >= iv) { lastLedMs = now; ledOn = !ledOn; digitalWrite(PIN_LED2, ledOn ? LOW : HIGH); }
 
-    if (now - lastLedMs >= ledInterval) {
-        lastLedMs = now;
-        ledOn = !ledOn;
-        digitalWrite(PIN_LED2, ledOn ? LOW : HIGH);
+    // ─── 6. 状态 (5Hz) ───
+    static uint32_t lastStat;
+    if (now - lastStat >= 200) {
+        lastStat = now;
+        // 方向
+        const char* dir;
+        int t = (int)g_throttle, s = (int)g_steering;
+        if      (t > 1520 && s > 1520) dir = "FWD+RGT";
+        else if (t > 1520 && s < 1480) dir = "FWD+LFT";
+        else if (t < 1480 && s > 1520) dir = "REV+RGT";
+        else if (t < 1480 && s < 1480) dir = "REV+LFT";
+        else if (t > 1520) dir = "FWD";
+        else if (t < 1480) dir = "REV";
+        else if (s > 1520) dir = "RGT";
+        else if (s < 1480) dir = "LFT";
+        else               dir = "STOP";
 
-        if (ledOn && !ps2Ok) {
-            Serial.print("[STAT] thr="); Serial.print(g_throttle);
-            Serial.print(" st="); Serial.print(g_steering);
-            Serial.print(" age="); Serial.print(now - g_lastCmdMs);
-            Serial.println("ms");
-        }
-    }
-
-    // PS2 模式状态 (200ms 实时)
-    static uint32_t lastPs2Stat = 0;
-    if (ps2Ok && now - lastPs2Stat >= 200) {
-        lastPs2Stat = now;
-        Serial.print("[PS2] LX="); Serial.print(g_ps2_lx);
-        Serial.print(" LY="); Serial.print(g_ps2_ly);
-        Serial.print(" -> thr="); Serial.print(g_throttle);
+        Serial.print(ps2Ok ? (g_motorArmed ? "ARM" : "LCK") : "---");
+        Serial.print(" thr="); Serial.print(g_throttle);
         Serial.print(" st="); Serial.print(g_steering);
-        Serial.println(g_motorArmed ? " ARMED" : " LOCKED");
+        Serial.print(" "); Serial.println(dir);
     }
 }
