@@ -47,6 +47,7 @@ static uint16_t  g_steering   = PWM_NEUTRAL;
 static uint32_t  g_lastCmdMs  = 0;
 static bool      g_escReady   = false;
 static bool      g_motorArmed = false;
+static bool      g_espMode    = false;  // false=PS2, true=ESP8266
 static uint8_t   g_ps2_lx     = 128;
 static uint8_t   g_ps2_ly     = 128;
 
@@ -285,7 +286,7 @@ void loop() {
             static uint16_t freezeCnt = 0;
             if (lx == lastLx && ly == lastLy && buttons2 == lastBt2) {
                 freezeCnt++;
-                if (freezeCnt > 500 && g_motorArmed) {  // 10s @ 50Hz
+                if (freezeCnt > 500 && g_motorArmed && !g_espMode) {  // PS2 模式才检测休眠
                     g_motorArmed = false;
                     escSet(PWM_NEUTRAL, PWM_NEUTRAL);
                     beepDisarm();
@@ -314,8 +315,20 @@ void loop() {
                 lastStart = startPressed;
             }
 
+            // SELECT 切换控制源 (buttons2 bit0, 低有效, 松开触发)
+            static bool lastSel = true;
+            bool selRel = (buttons2 & 0x01);
+            if (selRel && !lastSel) {
+                g_espMode = !g_espMode;
+                if (g_motorArmed) { g_motorArmed = false; escSet(PWM_NEUTRAL, PWM_NEUTRAL); }
+                beepDisarm();
+                Serial.print("[PS2] 切换到 ");
+                Serial.println(g_espMode ? "ESP8266 模式" : "PS2 手柄模式");
+            }
+            lastSel = selRel;
+
             // PS2 模式: 右摇杆上下(LX)=油门, 左摇杆左右(LY)=转向
-            if (g_motorArmed && g_escReady) {
+            if (g_motorArmed && g_escReady && !g_espMode) {
                 uint16_t thr = joyToThrottle(lx);
                 uint16_t str = joyToSteering(ly);
                 escSet(thr, str);
@@ -369,7 +382,6 @@ void loop() {
     static uint32_t lastStat;
     if (now - lastStat >= 200) {
         lastStat = now;
-        // 方向
         const char* dir;
         int t = (int)g_throttle, s = (int)g_steering;
         if      (t > 1520 && s > 1520) dir = "FWD+RGT";
@@ -382,7 +394,8 @@ void loop() {
         else if (s < 1480) dir = "LFT";
         else               dir = "STOP";
 
-        Serial.print(ps2Ok ? (g_motorArmed ? "ARM" : "LCK") : "---");
+        Serial.print(g_espMode ? "ESP" : "PS2");
+        Serial.print(ps2Ok ? (g_motorArmed ? " ARM" : " LCK") : " ---");
         Serial.print(" thr="); Serial.print(g_throttle);
         Serial.print(" st="); Serial.print(g_steering);
         Serial.print(" "); Serial.println(dir);
