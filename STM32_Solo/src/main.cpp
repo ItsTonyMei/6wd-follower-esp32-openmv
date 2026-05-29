@@ -21,6 +21,7 @@
  */
 
 #include <Arduino.h>
+#include "oled.h"
 
 // ─── PWM 常量 ───
 constexpr uint16_t PWM_NEUTRAL    = 1500;
@@ -235,6 +236,7 @@ static void beepDisarm()  { beep(250); }
 
 void setup() {
     beepInit();  // 最先初始化, 避免 PA3 浮空误响
+    oledInit();
 
     Serial.begin(115200);
     delay(100);
@@ -399,5 +401,17 @@ void loop() {
         Serial.print(" thr="); Serial.print(g_throttle);
         Serial.print(" st="); Serial.print(g_steering);
         Serial.print(" "); Serial.println(dir);
+
+        // OLED 显示
+        oledClear();
+        char buf[20];
+        snprintf(buf, sizeof(buf), "%s %s", g_espMode ? "ESP" : "PS2", g_motorArmed ? "ARM" : "LCK");
+        oledShowString(0, 0, buf);
+        snprintf(buf, sizeof(buf), "T:%4u S:%4u", g_throttle, g_steering);
+        oledShowString(0, 16, buf);
+        snprintf(buf, sizeof(buf), "%s", dir);
+        oledShowString(0, 32, buf);
+        if (!ps2Ok) oledShowString(0, 48, "NO PS2");
+        oledRefresh();
     }
 }
