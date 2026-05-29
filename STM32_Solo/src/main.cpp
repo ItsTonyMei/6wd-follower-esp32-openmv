@@ -236,7 +236,6 @@ static void beepDisarm()  { beep(250); }
 
 void setup() {
     beepInit();  // 最先初始化, 避免 PA3 浮空误响
-    oledInit();
 
     Serial.begin(115200);
     delay(100);
@@ -253,8 +252,11 @@ void setup() {
     Serial.print("PS2: ");
     Serial.println(ps2Config() ? "OK" : "not found");
 
-    // 显式确保锁定状态 (防止静态变量初始化异常)
+    oledInit();  // PS2 初始化完成后再初始化 OLED, 避免干扰
+
+    // 显式确保初始状态 (防止静态变量初始化异常)
     g_motorArmed = false;
+    g_espMode    = false;  // 默认 PS2 手动模式
     g_escReady   = false;
     g_lastCmdMs  = millis();
     escSet(PWM_NEUTRAL, PWM_NEUTRAL);
@@ -264,8 +266,9 @@ void setup() {
 
 void loop() {
     // ─── 1. 检测 PS2 手柄并读取 ───
-    static bool     ps2Ok     = false;
-    static uint32_t lastPs2   = 0;
+    static bool     ps2Ok       = false;
+    static uint32_t lastPs2     = 0;
+    static uint8_t  startupSkip = 3;  // 重连后跳过前几次轮询
     uint32_t now = millis();
 
     if (now - lastPs2 >= 20) {  // 50Hz 读取
@@ -299,12 +302,13 @@ void loop() {
                 freezeCnt = 0;
             }
 
-            // START 按钮: 首次连接后跳过 3 次轮询, 防止静态变量初始化异常误触发
-            static uint8_t  startupSkip = 3;
-            static bool     lastStart   = true;
+            // START / SELECT 按钮: 首次连接后跳过 3 次轮询
+            static bool lastStart = true;
+            static bool lastSel   = true;
             if (startupSkip > 0) {
                 startupSkip--;
-                lastStart = (buttons2 & 0x08);  // 同步初始状态
+                lastStart = (buttons2 & 0x08);  // 同步 START 初始状态
+                lastSel   = (buttons2 & 0x01);  // 同步 SELECT 初始状态
             } else {
                 bool startPressed = (buttons2 & 0x08);
                 if (startPressed && !lastStart) {
@@ -318,7 +322,6 @@ void loop() {
             }
 
             // SELECT 切换控制源 (buttons2 bit0, 低有效, 松开触发)
-            static bool lastSel = true;
             bool selRel = (buttons2 & 0x01);
             if (selRel && !lastSel) {
                 g_espMode = !g_espMode;
@@ -344,6 +347,7 @@ void loop() {
                 Serial.println("[PS2] 手柄断开");
                 ps2Ok = false;
                 g_motorArmed = false;
+                startupSkip = 3;  // 重连后跳过前几次轮询, 防数据抖动误触发
                 escSet(PWM_NEUTRAL, PWM_NEUTRAL);
             }
 
@@ -354,6 +358,7 @@ void loop() {
                 Serial.print("[PS2] 尝试连接... ");
                 if (ps2Config()) {
                     Serial.println("成功! (analog mode)");
+                    startupSkip = 3;  // 重连成功也跳过前几次轮询
                 } else {
                     Serial.println("未检测到");
                 }
@@ -405,7 +410,8 @@ void loop() {
         // OLED 显示
         oledClear();
         char buf[20];
-        snprintf(buf, sizeof(buf), "%s %s", g_espMode ? "ESP" : "PS2", g_motorArmed ? "ARM" : "LCK");
+        snprintf(buf, sizeof(buf), "%s %s", g_espMode ? "ESP" : "PS2",
+                 ps2Ok ? (g_motorArmed ? "ARM" : "LCK") : "---");
         oledShowString(0, 0, buf);
         snprintf(buf, sizeof(buf), "T:%4u S:%4u", g_throttle, g_steering);
         oledShowString(0, 16, buf);
