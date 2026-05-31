@@ -8,7 +8,7 @@
 OpenMV N6 (L1 感知)         ESP8266 (L2 决策+WiFi)        STM32F103 (L3 执行+安全)
 ├─ YOLOv8n NPU 45FPS        ├─ VIS 接收 D5@4800bd        ├─ PS2 手柄 (PB12-15)
 ├─ VL53L1X ToF (P4/P5)      ├─ FollowLogic 决策           ├─ USART3 ← ESP8266
-└─ VIS P0 SW UART@4800 →    ├─ UART0 swapped → STM32     ├─ 坦克混控 (tank-mix)
+└─ VIS P0 HW UART(3)@4800 →    ├─ UART0 swapped → STM32     ├─ 坦克混控 (tank-mix)
                              ├─ WiFi AP Dashboard          ├─ PB8=左电机, PB9=右电机
                              └─ /status JSON API           ├─ 双路三相无刷 ESC
                                                            ├─ LED2 + 蜂鸣器
@@ -26,7 +26,7 @@ OpenMV N6 (L1 感知)         ESP8266 (L2 决策+WiFi)        STM32F103 (L3 执�
 
 ```
 ├── OpenMV/                    # N6 固件 (MicroPython)
-│   └── main.py                # YOLOv8n + ToF + VIS P0 SW UART @ 4800
+│   └── main.py                # YOLOv8n + ToF + VIS P0 HW UART(3) @ 4800
 ├── ESP8266_Bridge/            # ESP8266 全功能控制器 (Arduino)
 │   ├── ESP8266_Bridge.ino     # VIS + FollowLogic + STM32 + Dashboard
 │   ├── Config.h               # 引脚/阈值/参数
@@ -43,7 +43,7 @@ OpenMV N6 (L1 感知)         ESP8266 (L2 决策+WiFi)        STM32F103 (L3 执�
 ## 通信协议
 
 ```
-N6 P0 SW UART @ 4800bd → ESP8266 D5 (GPIO14)
+N6 P0 HW UART(3) @ 4800bd → ESP8266 D5 (GPIO14)
 VIS:cx,cy,w,h,feetY,conf,PERSON,distScore,tofDist*XX\r\n
 
 ESP8266 UART0 swapped (GPIO15/D8, GPIO13/D7) @ 115200bd → STM32 USART3 (PB11, PB10)
@@ -72,7 +72,7 @@ ESP8266 UART0 swapped (GPIO15/D8, GPIO13/D7) @ 115200bd → STM32 USART3 (PB11, 
 ## 快速开始
 
 - **N6**: `main.py` 已写入闪存, 上电自启动
-- **ESP8266**: 烧录 `ESP8266_Bridge/ESP8266_Bridge.ino`, WiFi AP "Rover"/12345678
+- **ESP8266**: 烧录 `ESP8266_Bridge/ESP8266_Bridge.ino`, WiFi AP "Tracked Robot"/12345678
 - **STM32**: PlatformIO 打开 `STM32_Solo/`, 烧录; 按 PS2 START 解锁电机
 - **Dashboard**: 手机连 WiFi 后访问 `http://192.168.4.1`
 

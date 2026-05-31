@@ -1,6 +1,6 @@
 # ROADMAP — 履带车视觉跟随系统
 
-## 当前进展 (2026-05-31)
+## 当前进展 (2026-06-01)
 
 ### 已完成 & 已验证
 
@@ -12,11 +12,11 @@
 | **LED 指示** | ✅ 已验证 | PA4 快闪=ARMED, 中闪=LOCKED, 慢闪=无PS2 |
 | **控制器休眠检测** | ✅ 已验证 | 数据冻结 10s → 自动锁定 + 蜂鸣 |
 | **安全锁定** | ✅ 已验证 | 上电默认 LOCKED, 500ms 命令超时, PS2 断连自动归中 |
-| **ESP8266 → STM32 协议** | ✅ 已定义 | 6-byte: `[0xAA][th_lo][th_hi][st_lo][st_hi][CRC8]`, 每 50ms |
+| **ESP8266 → STM32 协议** | ✅ 已验证 | 6-byte CRC8 帧, USART3 115200, 50ms间隔, STM32端已打通 |
 | **ESP8266 FollowLogic** | ✅ 代码就绪 | 移植自 ESP32, 连续 throttle+steering 输出 |
 | **ESP8266 VIS 接收** | ✅ 已验证 | D5(GPIO14) SoftwareSerial @ 4800 ← N6, 97%+ 成功率 |
-| **ESP8266 WiFi Dashboard** | ✅ 已验证 | AP "Rover", HTTP :80, `/status` JSON |
-| **OpenMV N6** | ✅ 已验证 | YOLOv8n NPU 45FPS, VL53L1X ToF, VIS P0@4800 |
+| **ESP8266 WiFi Dashboard** | ✅ 已验证 | AP "Tracked Robot", HTTP :80, `/status` JSON |
+| **OpenMV N6** | ✅ 已验证 | YOLOv8n NPU 45FPS, VL53L1X ToF, VIS P0 HW UART(3) @ 4800 |
 | **ESP32** | ❌ 已废弃 | ESP8266 替代全部功能, 详见 `ESP32_Solo/DEPRECATED.md` |
 | **HC6060A 有刷电调** | ❌ 已废弃 | 实车使用三相无刷电机, 替换为双路独立无刷电调 |
 
@@ -26,8 +26,7 @@
 |--------|------|------|
 | 🔴 高 | 选定并采购双路无刷电调 | 需要双向(正反转)支持, 50Hz 舵机 PWM 接口, 电压匹配 48V 系统 |
 | 🔴 高 | 无刷电调接线 + 坦克混控验证 | PB8(左) + PB9(右) → 两路 ESC → 电机, 实地测试混控算法 |
-| 🔴 高 | ESP8266 ↔ STM32 串口打通 | STM32 端恢复 USART3 接收 + CRC8 校验 |
-| 🟡 中 | 遥控器 (ELRS/CRSF) | Phase 2, 备用遥控链路 |
+| 🟡 中 | 遥控器 (ELRS/CRSF) | Phase 2, 届时换 ESP32 (需3路硬件UART) |
 | 🟡 中 | 自动跟随联调 | ESP8266 FollowLogic + OpenMV VIS → STM32 坦克混控 → 电机 |
 | 🟢 低 | Dashboard 完善 | 加入 car 状态显示 |
 
@@ -37,6 +36,8 @@
 
 | 日期 | 变更 | 原因 |
 |------|------|------|
+| 2026-06-01 | **ESP8266 ↔ STM32 USART3 通信打通** | 恢复 STM32 SerialESP 接收, CRC8 校验, PS2/ESP 通用超时 |
+| 2026-06-01 | **N6 VIS: bit-bang → P0 硬件 UART(3)** | P0=USART3 TX, 省 CPU 资源, 更可靠 |
 | 2026-05-31 | **HC6060A 有刷电调 → 双路独立无刷电调** | 实车检测发现原平台使用两台三相无刷电机驱动左右履带 |
 | 2026-05-28 | ESP32 → ESP8266 | NodeMCU V3 替代 ESP32 全部 L2 功能 |
 
@@ -132,7 +133,7 @@ P0 SW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = 
 
 ### 0.3 OpenMV N6 ✅ 完成
 - [x] YOLOv8n NPU @ 45FPS, VL53L1X ToF (I2C2: P4/P5, addr 0x29)
-- [x] VIS P0 SW UART @ 4800 → ESP8266 D5
+- [x] VIS P0 硬件 UART(3) @ 4800 → ESP8266 D5 (替代 bit-bang 软件串口)
 - [x] 帧格式: `VIS:cx,cy,w,h,feetY,conf,PERSON,distScore,tofDist*CS\r\n`
 
 ### 0.4 硬件清单
@@ -171,15 +172,16 @@ P0 SW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = 
 - [x] 控制器休眠 10s 自动锁定
 - [x] SELECT 切换 PS2/ESP8266 控制源
 
-### 1.3 ESP8266 串口通信 (协议已定义, STM32 端待接入)
+### 1.3 ESP8266 串口通信 ✅ 已打通
 ESP8266 → STM32 下行 (每 50ms):
 ```
 [0xAA] [throttle_lo] [throttle_hi] [steering_lo] [steering_hi] [CRC8]
 6 bytes, CRC8 over bytes 1-4, poly 0x07
 ```
-- [ ] STM32 USART3 (PB10/PB11) 接收 + CRC8 校验
-- [ ] PS2 优先, ESP8266 备选
-- [ ] ESP 模式下 MotorCmd → 坦克混控 → 左右 PWM
+- [x] STM32 USART3 (PB10/PB11) 接收 + CRC8 校验 (SerialESP)
+- [x] PS2 优先 (SELECT 切换), ESP8266 备选
+- [x] ESP 模式下 MotorCmd → 坦克混控 → 左右 PWM
+- [x] 命令超时 PS2/ESP 通用 (500ms 无命令 → 归中)
 
 ### 1.4 安全机制
 - [x] 命令超时 500ms → STOP
@@ -198,13 +200,13 @@ ESP8266 → STM32 下行 (每 50ms):
 | 遥控器 | Jumper T14 ELRS (EdgeTX, ELRS 2.4G 1W) |
 | 接收机 | Radiomaster ER6 / Happymodel EP1 (CRSF 输出) |
 
-> 接收机通过 UART 输出 CRSF 协议帧到 ESP8266。通道映射: CH1=转向, CH3=油门, CH5=模式, CH6=限速。
+> 接收机通过 UART 输出 CRSF 协议帧。通道映射: CH1=转向, CH3=油门, CH5=模式, CH6=限速。
 > CRSF 协议自带 RSSI + LQ 链路质量, 失联自动 FailSafe。
-> Phase 2+ 接入 ESP8266 的 UART1 或者 SoftwareSerial。
+> ESP8266 硬件串口已用满 (UART0→STM32, UART1仅TX无RX)。Phase 2 换回 ESP32 (3路全双工 UART)。
 
 ---
 
-## Phase 3 — ESP8266 ↔ STM32 UART 通信协议 (协议已定, 待联调)
+## Phase 3 — ESP8266 ↔ STM32 UART 通信 ✅ 已打通
 
 **下行 (ESP8266 → STM32, 每 50ms)**:
 ```
@@ -219,9 +221,10 @@ STM32 收到后经坦克混控转换为左/右 PWM。
 10 bytes
 ```
 
-- [ ] ESP8266 端 UART0 swapped 发送 (代码已就绪)
-- [ ] STM32 端 USART3 (PB10/PB11) 接收 (待接入)
-- [ ] 心跳 + 超时处理
+- [x] ESP8266 端 UART0 swapped 发送 (代码就绪)
+- [x] STM32 端 USART3 (PB10/PB11) 接收 + CRC8 校验 (已实现)
+- [x] 命令超时 PS2/ESP 通用 (500ms → 归中)
+- [x] PS2 SELECT 键切换控制源
 
 ---
 
@@ -240,7 +243,7 @@ STM32 收到后经坦克混控转换为左/右 PWM。
 
 - [x] WiFi AP + HTTP Dashboard
 - [x] VIS 数据实时显示 (置信度/距离分/ToF/检测框)
-- [ ] Car 状态显示 (throttle/steering/left/right PWM)
+- [x] Car 状态显示 (throttle/steering/L/R PWM, 串口 5Hz + OLED)
 - [ ] 在线参数调整
 - [ ] 日志记录
 

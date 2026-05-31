@@ -3,7 +3,7 @@
 ## Project Overview
 
 金属履带车（载重 100kg）视觉跟随系统。三层架构: **OpenMV** 负责 YOLO person detection + VL53L1X ToF 激光测距 + 视觉距离融合; **ESP8266** 负责 FollowLogic 决策 + WiFi Dashboard; **STM32F103** 负责硬实时电机控制 + 安全保护。
-OpenMV → ESP8266 通过 P0 SW UART 4800 baud (VIS ASCII 协议), ESP8266 ↔ STM32 通过 UART0 swapped (GPIO15/GPIO13, 115200 baud, 6-byte MotorCmd 下行 + 遥测上行)。
+OpenMV → ESP8266 通过 P0 HW UART(3) 4800 baud (VIS ASCII 协议), ESP8266 ↔ STM32 通过 UART0 swapped (GPIO15/GPIO13, 115200 baud, 6-byte MotorCmd 下行 + 遥测上行)。
 
 ## Hardware Platform
 
@@ -17,7 +17,7 @@ OpenMV → ESP8266 通过 P0 SW UART 4800 baud (VIS ASCII 协议), ESP8266 ↔ S
 ### 控制板
 | 板卡 | 角色 | 关键外设 |
 |------|------|---------|
-| OpenMV Cam N6 | L1 感知层 | YOLOv8n NPU (45FPS) + VL53L1X ToF (I2C2, P4/P5) + VIS P0 SW UART |
+| OpenMV Cam N6 | L1 感知层 | YOLOv8n NPU (45FPS) + VL53L1X ToF (I2C2, P4/P5) + VIS P0 HW UART(3) |
 | ESP8266 NodeMCU V3 (ESP-12E) | L2 决策层 | FollowLogic + WiFi Dashboard + VIS 接收 (D5/GPIO14) + STM32 (D7/D8) |
 | STM32F103C8T6 (定制板) | L3 执行安全层 | PS2 (PB12-PB15) + USART3 ↔ ESP8266, TIM4 PWM → 双路无刷 ESC, 急停 GPIO |
 
@@ -40,7 +40,7 @@ OpenMV → ESP8266 通过 P0 SW UART 4800 baud (VIS ASCII 协议), ESP8266 ↔ S
 
 ### 通信链路
 - VL53L1X ToF → OpenMV N6: I2C(2) (SCL=P4, SDA=P5), addr 0x29, 40-4000mm, ±1mm, max 50Hz
-- OpenMV N6 → ESP8266: P0 SW UART (4800 baud) → D5 (GPIO14) SoftwareSerial, VIS ASCII 协议 (XOR checksum)
+- OpenMV N6 → ESP8266: P0 HW UART(3) (4800 baud) → D5 (GPIO14) SoftwareSerial, VIS ASCII 协议 (XOR checksum)
 - ESP8266 → STM32: UART0 swapped (TX=D8/GPIO15, RX=D7/GPIO13) → STM32 USART3 (PB10/PB11), 115200
 - ESP8266 → STM32 下行协议: 6-byte frame: `[0xAA] [th_lo] [th_hi] [st_lo] [st_hi] [CRC8]`
 - STM32 → 左 ESC: TIM4 CH3 (PB8), 50Hz PWM, 1000-2000μs
@@ -50,7 +50,7 @@ OpenMV → ESP8266 通过 P0 SW UART 4800 baud (VIS ASCII 协议), ESP8266 ↔ S
 ### ESP8266 引脚分配
 | 引脚 | 功能 | 设备 | 波特率 | 方向 |
 |------|------|------|--------|------|
-| D5 (GPIO14) | SoftwareSerial RX | OpenMV P0 SW UART | 4800 | 单向 RX — VIS 帧 |
+| D5 (GPIO14) | SoftwareSerial RX | OpenMV P0 HW UART(3) | 4800 | 单向 RX — VIS 帧 |
 | D8 (GPIO15) | UART0 TX (swapped) | STM32 PB11 (USART3 RX) | 115200 | → MotorCmd 下行 |
 | D7 (GPIO13) | UART0 RX (swapped) | STM32 PB10 (USART3 TX) | 115200 | ← 遥测上行 |
 | GND | 共地 | STM32 GND | — | — |
