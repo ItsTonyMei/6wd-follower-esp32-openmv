@@ -132,32 +132,15 @@ if person_idx is None:
     person_idx = 0
 
 # ============================================================================
-# VIS 输出: P0 软件 UART @ 4800 baud → ESP8266 Bridge D5 (GPIO14)
+# VIS 输出: P0 硬件 UART(3) @ 4800 baud → ESP8266 D5 (GPIO14)
 # VL53L1X → I2C(2) (P4=SCL, P5=SDA) — 独占, 无冲突
 # ============================================================================
 
 VIS_BAUD      = 4800
 VIS_INTERVAL_MS = 200   # 每 200ms 发送一次 VIS 帧
 
-from machine import Pin as _Pin
-_p0 = _Pin('P0', _Pin.OUT_PP)
-_p0.high()
-
-_VIS_BIT_US = 208  # 4800 baud = 208us/bit
-
-def vis_putc(c):
-    _p0.low()
-    time.sleep_us(_VIS_BIT_US)
-    for i in range(8):
-        _p0.high() if (c >> i) & 1 else _p0.low()
-        time.sleep_us(_VIS_BIT_US)
-    _p0.high()
-    time.sleep_us(_VIS_BIT_US)
-
-def vis_send(data_str):
-    """发送 VIS 帧: 软件 UART on P0"""
-    for ch in data_str:
-        vis_putc(ord(ch))
+from machine import UART, Pin as _Pin
+vis_uart = UART(3, VIS_BAUD, tx=_Pin('P0'))  # P0 = USART3 TX, 硬件串口
 
 TOF_ENABLED = False
 try:
@@ -319,7 +302,7 @@ while True:
         for ch in data_str:
             csum ^= ord(ch)
         try:
-            vis_send("VIS:%s*%d\r\n" % (data_str, csum))
+            vis_uart.write("VIS:%s*%d\r\n" % (data_str, csum))
         except Exception as e:
             uart_errors += 1
 

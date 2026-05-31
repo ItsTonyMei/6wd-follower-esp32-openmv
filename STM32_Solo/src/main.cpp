@@ -1,13 +1,14 @@
 /**
- * STM32F103C8T6 — L3 执行与安全层 (HC6060A 混控款电调)
+ * STM32F103C8T6 — L3 执行与安全层 (双路独立无刷电调)
  *
  * 功能:
  *   1. PS2 手柄控制 (CN4: PB12-PB15) — 手动遥控, 优先于 ESP8266
  *   2. USART3 (PB10=TX, PB11=RX) 接收 ESP8266 MotorCmd 下行协议
- *   3. TIM4 CH3 (PB8) → 黄线 (转向), CH4 (PB9) → 白线 (油门)
+ *   3. TIM4 CH3 (PB8) → 左电机 ESC, CH4 (PB9) → 右电机 ESC
  *   4. 50Hz 标准舵机 PWM (1000-2000μs, 中位 1500μs)
- *   5. 500ms 命令超时 → 自动归中 (FAILSAFE)
- *   6. LED2 (PA4, 蓝灯) 模式指示 + 蜂鸣器 (PA3, 经跳线, active-HIGH)
+ *   5. 坦克混控 (tank-mix): throttle+steering → 左/右独立 PWM
+ *   6. 500ms 命令超时 → 自动归中 (FAILSAFE)
+ *   7. LED2 (PA4, 蓝灯) 模式指示 + 蜂鸣器 (PA3, 经跳线, active-HIGH)
  *
  * 控制优先级: PS2 手柄 (已连接时) > ESP8266 串口
  *
@@ -16,7 +17,7 @@
  *   USB-UART: CH9102 via USART1 (PA9=TX, PA10=RX) — debug/monitor
  *   PS2: CN4 6P (PB12=CLK, PB13=CS, PB14=CMD, PB15=DATA) — WHEELTEC 定义
  *   ESP8266: USART3 (PB10=TX, PB11=RX) ← ESP8266 D7/D8
- *   ESC: PB8=黄线(转向), PB9=白线(油门) @ H6/H7 舵机接口
+ *   ESC: PB8=左电机(→H6), PB9=右电机(→H7) — 两路三相无刷电调独立控制
  *   烧录: PlatformIO serial @ 115200, -dtr,rts,dtr,,,,
  */
 
@@ -42,6 +43,9 @@ constexpr uint8_t PIN_LED2 = PA4;
 HardwareSerial SerialUSART1(PA10, PA9);
 #define Serial SerialUSART1
 
+// ─── USART3: ESP8266 通信 ───
+HardwareSerial SerialESP(PB11, PB10);  // RX=PB11 ← ESP D8, TX=PB10 → ESP D7
+
 // ─── 全局控制状态 ───
 static uint16_t  g_throttle   = PWM_NEUTRAL;
 static uint16_t  g_steering   = PWM_NEUTRAL;
@@ -63,7 +67,22 @@ static uint8_t   g_ps2_ly     = 128;
 #define PS2_CLK_L   GPIOB->BRR  = (1 << 12)
 
 // ═══════════════════════════════════════════════════════════════
-// ESC PWM (TIM4: PB8=黄线转向, PB9=白线油门, 50Hz)
+// CRC8 (poly 0x07, init 0x00 — 与 ESP8266 一致)
+// ═══════════════════════════════════════════════════════════════
+
+static uint8_t crc8(const uint8_t *data, size_t len) {
+    uint8_t crc = 0;
+    while (len--) {
+        crc ^= *data++;
+        for (uint8_t i = 0; i < 8; i++)
+            crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : crc << 1;
+    }
+    return crc;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ESC PWM (TIM4: PB8=左电机, PB9=右电机, 50Hz)
+// 双路独立三相无刷电调, 坦克混控由 MCU 完成
 // ═══════════════════════════════════════════════════════════════
 
 static void escInit() {
@@ -84,16 +103,22 @@ static void escInit() {
     TIM4->EGR   = TIM_EGR_UG;
     TIM4->CR1  |= TIM_CR1_CEN;
 
-    Serial.print("[ESC] TIM4 50Hz: PB8(转向/黄) PB9(油门/白)\n");
+    Serial.print("[ESC] TIM4 50Hz: PB8(左电机) PB9(右电机)\n");
 }
 
+// 坦克混控: throttle+steering → 左/右独立 PWM
+// throttle: 1000-2000μs, 1500=停, >1500=前进, <1500=后退
+// steering: 1000-2000μs, 1500=直行, >1500=右转, <1500=左转
 static void escSet(uint16_t throttle, uint16_t steering) {
-    if (throttle < PWM_MIN) throttle = PWM_MIN;
-    if (throttle > PWM_MAX) throttle = PWM_MAX;
-    if (steering < PWM_MIN) steering = PWM_MIN;
-    if (steering > PWM_MAX) steering = PWM_MAX;
-    TIM4->CCR3 = steering;  // PB8 → 黄线 (转向)
-    TIM4->CCR4 = throttle;  // PB9 → 白线 (油门)
+    int sOff = (int)steering - (int)PWM_NEUTRAL;
+    int left  = (int)throttle + sOff;
+    int right = (int)throttle - sOff;
+    if (left  < PWM_MIN) left  = PWM_MIN;
+    if (left  > PWM_MAX) left  = PWM_MAX;
+    if (right < PWM_MIN) right = PWM_MIN;
+    if (right > PWM_MAX) right = PWM_MAX;
+    TIM4->CCR3 = (uint16_t)left;   // PB8 → 左电机
+    TIM4->CCR4 = (uint16_t)right;  // PB9 → 右电机
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -238,9 +263,14 @@ void setup() {
     beepInit();  // 最先初始化, 避免 PA3 浮空误响
 
     Serial.begin(115200);
+
+    // USART3: PB11=RX ← ESP8266 D8(GPIO15), PB10=TX → ESP8266 D7(GPIO13)
+    SerialESP.begin(115200);
+
     delay(100);
 
-    Serial.println("\nSTM32 HC6060A PS2 Controller");
+    Serial.println("\nSTM32 Dual BLDC Tracked Controller");
+    Serial.println("[USART3] PB11(RX) PB10(TX) @ 115200 baud ← ESP8266");
 
     pinMode(PIN_LED2, OUTPUT);
     digitalWrite(PIN_LED2, HIGH);
@@ -332,11 +362,11 @@ void loop() {
             }
             lastSel = selRel;
 
-            // PS2 模式: 右摇杆上下(LX)=油门, 左摇杆左右(LY)=转向
+            // PS2 模式: 摇杆→油门/转向→坦克混控→左/右 PWM
             if (g_motorArmed && g_escReady && !g_espMode) {
                 uint16_t thr = joyToThrottle(lx);
                 uint16_t str = joyToSteering(ly);
-                escSet(thr, str);
+                escSet(thr, str);  // 内部 tank-mix → 左/右电机
                 g_throttle = thr;
                 g_steering = str;
                 g_lastCmdMs = now;
@@ -366,8 +396,41 @@ void loop() {
         }
     }
 
-    // ─── 2. 命令超时 (无 PS2 时归中) ───
-    if (!ps2Ok && g_escReady && millis() - g_lastCmdMs > CMD_TIMEOUT_MS)
+    // ─── 2. ESP8266 串口接收 (USART3, PB11=RX ← ESP8266 D8) ───
+    while (SerialESP.available() >= 6) {
+        if (SerialESP.read() != 0xAA) continue;  // 查找帧头
+
+        // 读取剩余 5 bytes (每 byte 最多等 2ms)
+        uint8_t buf[5];
+        bool ok = true;
+        for (int i = 0; i < 5; i++) {
+            uint32_t t0 = micros();
+            while (!SerialESP.available()) {
+                if (micros() - t0 > 2000) { ok = false; break; }
+            }
+            if (!ok) break;
+            buf[i] = SerialESP.read();
+        }
+        if (!ok) break;  // 字节超时, 丢弃不完整帧
+
+        // CRC8 校验 (poly 0x07, over bytes 1-4)
+        if (buf[4] != crc8(buf, 4)) continue;
+
+        uint16_t thr = buf[0] | ((uint16_t)buf[1] << 8);
+        uint16_t str = buf[2] | ((uint16_t)buf[3] << 8);
+        if (thr < PWM_MIN || thr > PWM_MAX || str < PWM_MIN || str > PWM_MAX) continue;
+
+        // ESP 模式 + 已解锁 → 坦克混控 → 左右 PWM
+        if (g_espMode && g_motorArmed && g_escReady) {
+            escSet(thr, str);
+            g_throttle = thr;
+            g_steering = str;
+            g_lastCmdMs = millis();
+        }
+    }
+
+    // ─── 3. 命令超时 (PS2/ESP 通用, 500ms 无有效命令 → 归中) ───
+    if (g_escReady && millis() - g_lastCmdMs > CMD_TIMEOUT_MS)
         escSet(PWM_NEUTRAL, PWM_NEUTRAL);
 
     // ─── 4. ESC 自检计时 ───
@@ -401,10 +464,17 @@ void loop() {
         else if (s < 1480) dir = "LFT";
         else               dir = "STOP";
 
+        // 计算坦克混控后左/右 PWM 值 (用于调试显示)
+        int sOff = s - (int)PWM_NEUTRAL;
+        int left  = t + sOff; if (left  < 1000) left  = 1000; if (left  > 2000) left  = 2000;
+        int right = t - sOff; if (right < 1000) right = 1000; if (right > 2000) right = 2000;
+
         Serial.print(g_espMode ? "ESP" : "PS2");
         Serial.print(ps2Ok ? (g_motorArmed ? " ARM" : " LCK") : " ---");
         Serial.print(" thr="); Serial.print(g_throttle);
         Serial.print(" st="); Serial.print(g_steering);
+        Serial.print(" L="); Serial.print(left);
+        Serial.print(" R="); Serial.print(right);
         Serial.print(" "); Serial.println(dir);
 
         // OLED 显示
@@ -415,9 +485,10 @@ void loop() {
         oledShowString(0, 0, buf);
         snprintf(buf, sizeof(buf), "T:%4u S:%4u", g_throttle, g_steering);
         oledShowString(0, 16, buf);
-        snprintf(buf, sizeof(buf), "%s", dir);
+        snprintf(buf, sizeof(buf), "L:%4d R:%4d", left, right);
         oledShowString(0, 32, buf);
-        if (!ps2Ok) oledShowString(0, 48, "NO PS2");
+        snprintf(buf, sizeof(buf), "%s", dir);
+        oledShowString(0, 48, buf);
         oledRefresh();
     }
 }

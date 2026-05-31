@@ -10,6 +10,9 @@
 // ESP8266 替代 ESP32 全部功能: VIS接收 + FollowLogic + Dashboard + STM32通信
 //
 // 供电: 48V 89Ah 锂电池 → 48V→5V 10A 防水降压 → ESP8266 (USB)
+//
+// 动力: 两台三相无刷电机 + 双路独立无刷 ESC
+// STM32 端坦克混控: left = thr + (st-1500), right = thr - (st-1500)
 
 // ─── 引脚分配 ───
 // ┌──────────────────┬────────────────┬─────────────────────────────┐
@@ -32,12 +35,12 @@ constexpr uint8_t PIN_STM32_RX  = 13;   // D7 ← STM32 PB10
 constexpr uint32_t STM32_BAUD   = 115200;
 
 // ─── WiFi AP ───
-constexpr char WIFI_SSID[] = "Rover";
+constexpr char WIFI_SSID[] = "Tracked Robot";
 constexpr char WIFI_PASS[] = "12345678";
 
-// ─── HC6060A 混控款电调 PWM 参数 ───
-// 白线=油门, 黄线=转向, 电调内部处理差速混控
+// ─── 双路无刷电调 PWM 参数 ───
 // 50Hz 舵机 PWM: 1000-2000μs, 中位 1500μs
+// MotorCmd {throttle, steering} → STM32 坦克混控 → 左/右独立 PWM
 constexpr uint16_t PWM_NEUTRAL         = 1500;
 constexpr uint16_t PWM_MIN             = 1000;
 constexpr uint16_t PWM_MAX             = 2000;
@@ -54,7 +57,8 @@ constexpr uint32_t VISION_TIMEOUT_MS     = 700;
 constexpr uint32_t ESC_INIT_DELAY_MS     = 3000;
 
 // ─── MotorCmd ───
+// throttle/steering 发送到 STM32 后由坦克混控转换为左/右电机 PWM
 struct MotorCmd {
-    uint16_t throttle;  // 白线油门 (1000-2000μs, 1500=停止)
-    uint16_t steering;  // 黄线转向 (1000-2000μs, 1500=直行)
+    uint16_t throttle;  // 油门 (1000-2000μs, 1500=停止)
+    uint16_t steering;  // 转向 (1000-2000μs, 1500=直行)
 };

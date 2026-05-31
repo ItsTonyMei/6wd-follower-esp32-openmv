@@ -3,6 +3,9 @@
 // MCU: ESP8266 NodeMCU V3 (ESP-12E), 80MHz, 4MB Flash
 // 替代 ESP32: VIS接收 + FollowLogic + STM32通信 + WiFi Dashboard
 //
+// 动力: 两台三相无刷电机 + 双路独立无刷 ESC
+// 控制: FollowLogic → MotorCmd {throttle, steering} → STM32 坦克混控 → 左/右 PWM
+//
 // 引脚:
 //   D5 (GPIO14) ← OpenMV P0 SW UART (SoftwareSerial, 4800 baud)
 //   D8 (GPIO15)  → STM32 PB11 (UART0 swapped, 115200 baud)
@@ -157,7 +160,7 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
 
 <div class="card" style="display:flex;justify-content:space-between;align-items:center">
   <div><div style="font-size:18px;font-weight:bold;color:#58a6ff">履带车视觉跟随</div>
-  <div class="lbl">ESP8266 HC6060A</div></div>
+  <div class="lbl">ESP8266 Dual BLDC</div></div>
   <div style="text-align:right">
     <div class="val" style="font-size:13px" id="sys-uptime">--</div>
     <div class="lbl">运行时间</div>
@@ -168,8 +171,8 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
 <div class="card">
   <div class="row"><div class="lbl">控制状态</div><span id="car-badge" class="badge idle">STOP</span></div>
   <div class="grid2" style="margin-top:8px">
-    <div><div class="lbl">油门 (白线)</div><div class="val" id="car-th">1500 μs</div></div>
-    <div><div class="lbl">转向 (黄线)</div><div class="val" id="car-st">1500 μs</div></div>
+    <div><div class="lbl">油门 (T)</div><div class="val" id="car-th">1500 μs</div></div>
+    <div><div class="lbl">转向 (S)</div><div class="val" id="car-st">1500 μs</div></div>
   </div>
 </div>
 
