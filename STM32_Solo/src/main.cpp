@@ -28,9 +28,7 @@
 constexpr uint16_t PWM_NEUTRAL    = 1500;
 constexpr uint16_t PWM_MIN        = 1000;
 constexpr uint16_t PWM_MAX        = 2000;
-constexpr uint16_t MAX_THROTTLE   = 400;   // 油门最大偏离中位
-constexpr uint16_t MAX_STEER      = 300;   // 转向最大偏离中位
-constexpr int      JOY_DEADBAND   = 5;     // 摇杆中位死区 (±5 / 128)
+constexpr int      JOY_DEADBAND   = 5;     // 摇杆中位死区 (±5 / 128 ≈ ±20μs)
 constexpr uint32_t CMD_TIMEOUT_MS = 500;
 constexpr uint32_t ESC_INIT_DELAY = 3000;
 
@@ -89,8 +87,8 @@ static void escInit() {
     RCC->APB1ENR |= RCC_APB1ENR_TIM4EN;
     RCC->APB2ENR |= RCC_APB2ENR_IOPBEN;
 
-    GPIOB->CRH &= ~(0xF << 16 | 0xF << 20);
-    GPIOB->CRH |= (0xB << 16 | 0xB << 20);  // AF push-pull, 50MHz
+    GPIOB->CRH &= ~(0xF << 0 | 0xF << 4);     // 清除 PB8, PB9
+    GPIOB->CRH |= (0xB << 0 | 0xB << 4);      // PB8/PB9: AF push-pull, 50MHz
 
     TIM4->PSC  = 71;
     TIM4->ARR  = 19999;
@@ -223,24 +221,24 @@ static bool ps2Config() {
     return false;
 }
 
-// 摇杆 → PWM 映射
+// 摇杆 → PWM 映射 (满幅 1000-2000)
 // LY: 0=上, 128=中, 255=下  → 油门: 上=前进
 // LX: 0=左, 128=中, 255=右  → 转向: 右=右转
 static uint16_t joyToThrottle(uint8_t ly) {
-    int off = 128 - (int)ly;                     // 上推 = 正值
+    int off = 128 - (int)ly;
     if (abs(off) <= JOY_DEADBAND) return PWM_NEUTRAL;
-    int val = (int)PWM_NEUTRAL + off * (int)MAX_THROTTLE / 128;
+    int val = (int)PWM_NEUTRAL + off * 500 / 128;
     if (val < PWM_MIN) val = PWM_MIN;
     if (val > PWM_MAX) val = PWM_MAX;
     return (uint16_t)val;
 }
 
 static uint16_t joyToSteering(uint8_t lx) {
-    int off = (int)lx - 128;                     // 右推 = 正值
+    int off = (int)lx - 128;
     if (abs(off) <= JOY_DEADBAND) return PWM_NEUTRAL;
-    int val = (int)PWM_NEUTRAL + off * (int)MAX_STEER / 128;
-    if (val < (int)(PWM_NEUTRAL - MAX_STEER)) val = PWM_NEUTRAL - MAX_STEER;
-    if (val > (int)(PWM_NEUTRAL + MAX_STEER)) val = PWM_NEUTRAL + MAX_STEER;
+    int val = (int)PWM_NEUTRAL + off * 500 / 128;
+    if (val < PWM_MIN) val = PWM_MIN;
+    if (val > PWM_MAX) val = PWM_MAX;
     return (uint16_t)val;
 }
 
@@ -276,7 +274,7 @@ void setup() {
     digitalWrite(PIN_LED2, HIGH);
 
     escInit();
-    Serial.print("ESC: wait "); Serial.print(ESC_INIT_DELAY); Serial.println("ms");
+    Serial.print("[ESC] TIM4 50Hz: PB8(左) PB9(右) — 上电输出中位, ");
 
     ps2Init();
     Serial.print("PS2: ");
@@ -284,14 +282,14 @@ void setup() {
 
     oledInit();  // PS2 初始化完成后再初始化 OLED, 避免干扰
 
-    // 显式确保初始状态 (防止静态变量初始化异常)
+    // 初始状态
     g_motorArmed = false;
-    g_espMode    = false;  // 默认 PS2 手动模式
+    g_espMode    = false;
     g_escReady   = false;
     g_lastCmdMs  = millis();
     escSet(PWM_NEUTRAL, PWM_NEUTRAL);
 
-    Serial.println("READY. Press START to arm.\n");
+    Serial.println("READY. 3s 后 PWM 跟随摇杆. 摇杆推满→ESC上电→进编程模式.\n");
 }
 
 void loop() {
@@ -363,10 +361,12 @@ void loop() {
             lastSel = selRel;
 
             // PS2 模式: 摇杆→油门/转向→坦克混控→左/右 PWM
-            if (g_motorArmed && g_escReady && !g_espMode) {
-                uint16_t thr = joyToThrottle(lx);
-                uint16_t str = joyToSteering(ly);
-                escSet(thr, str);  // 内部 tank-mix → 左/右电机
+            // LOCKED=满幅(ESC校准)  ARMED=安全限幅
+            // LOCKED 时同样输出 PWM, 方便 ESC 编程/校准
+            uint16_t thr = joyToThrottle(lx);
+            uint16_t str = joyToSteering(ly);
+            if (g_escReady && !g_espMode) {
+                escSet(thr, str);
                 g_throttle = thr;
                 g_steering = str;
                 g_lastCmdMs = now;
