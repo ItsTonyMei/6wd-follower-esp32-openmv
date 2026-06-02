@@ -10,8 +10,8 @@
 | **PS2 手柄控制** | ✅ 已验证 | 右摇杆上下=油门, 左摇杆左右=转向, START 解锁/锁定 |
 | **蜂鸣器** | ✅ 已验证 | PA3 (经跳线→S8050, active-HIGH), ARM=两声短, DISARM=一声长 |
 | **LED 指示** | ✅ 已验证 | PA4 快闪=ARMED, 中闪=LOCKED, 慢闪=无PS2 |
-| **控制器休眠检测** | ✅ 已验证 | 数据冻结 10s → 自动锁定 + 蜂鸣 |
-| **安全锁定** | ✅ 已验证 | 上电默认 LOCKED, 20s 命令超时, PS2 断连自动归中 |
+| **控制器休眠检测** | ✅ 已验证 | 数据冻结 30s → 自动锁定 + 蜂鸣 |
+| **安全锁定** | ✅ 已验证 | 上电默认 LOCKED, 摇杆无操作 60s 自动锁定, PS2 断连立即锁定 |
 | **ESP8266 → STM32 协议** | ✅ 已验证 | 6-byte CRC8 帧, USART3 115200, 50ms间隔, STM32端已打通 |
 | **ESP8266 FollowLogic** | ✅ 代码就绪 | 移植自 ESP32, 连续 throttle+steering 输出 |
 | **ESP8266 VIS 接收** | ✅ 已验证 | D5(GPIO14) SoftwareSerial @ 4800 ← N6, 97%+ 成功率 |
@@ -44,8 +44,8 @@
 | 2026-05-31 | **HC6060A 有刷电调 → 双路独立无刷电调** | 实车检测发现原平台使用两台三相无刷电机驱动左右履带 |
 | 2026-05-28 | ESP32 → ESP8266 | NodeMCU V3 替代 ESP32 全部 L2 功能 |
 
-> **当前控制方案**: STM32 输出两路独立 50Hz PWM (PB8=左电机, PB9=右电机)，坦克混控由 MCU 完成。
-> **混控公式**: `left = throttle + (steering - 1500)`, `right = throttle - (steering - 1500)`, 钳位 1000-2000μs。
+> **当前控制方案**: STM32 TIM3 输出两路 50Hz PWM (PB0=左电机 H8, PB1=右电机 H9), 坦克混控。PWM: 650-1275-1900μs。
+> **混控公式**: `left = throttle + (steering - PWM_NEUTRAL)`, `right = throttle - (steering - PWM_NEUTRAL)`。
 
 ---
 
@@ -64,8 +64,8 @@
 │                   L3: 执行与安全层 (STM32)                     │
 │   PS2 手柄 + ESP8266 串口                                     │
 │   坦克混控: throttle+steering → 左/右独立 PWM                  │
-│   输出: PB8(左电机) + PB9(右电机) → 双路三相无刷 ESC           │
-│   命令超时 500ms + 控制器休眠 10s + 断连自动归中               │
+│   输出: PB0(左电机) + PB1(右电机) → 双路三相无刷 ESC           │
+│   无操作 60s 锁定 + 休眠 30s 锁定 + 断连立即锁定                │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,10 +75,10 @@
 |---|--------|------|---------|------|
 | 1 | 急停按钮 | 继电器物理断开电机电源 | <10ms | 未实现 |
 | 2 | 过流检测 | ADC阈值 → PWM归零 | <1ms | 未实现 |
-| 3 | 命令超时 | 500ms无有效命令 → STOP (1500μs) | <500ms | **已实现** |
+| 3 | 命令超时 | 摇杆无操作 60s → 自动锁定 + 蜂鸣 | <60s | **已实现** |
 | 4 | 遥控失联 | CRSF link lost → STOP | <100ms | Phase 2+ |
 | 5 | 视觉超时 | VIS_TIMEOUT=700ms → 降级 STOP | <700ms | **已实现** |
-| 6 | 控制器休眠 | PS2 数据冻结 10s → 自动锁定 + 蜂鸣 | <10s | **已实现** |
+| 6 | 控制器休眠 | PS2 数据冻结 30s → 自动锁定 + 蜂鸣 | <30s | **已实现** |
 
 ## 数据流
 
@@ -88,23 +88,23 @@ OpenMV N6                     ESP8266                        STM32
 YOLO检测                       VIS接收 (SoftwareSerial)       PS2 轮询 (50Hz)
   │                              │                             │
   ├── VL53L1X ToF (I2C)          ▼                             ├── ESP8266 串口
-  │     └→ 距离(mm)             FollowLogic.update()            │    (USART3, 待接入)
+  │     └→ 距离(mm)             FollowLogic.update()            │    (USART3, 已打通)
   ▼                              │                             ▼
 视觉+ToF融合距离                  ▼                            MotorCmd 解析
   │                             MotorCmd {thr, st} μs           │
   ▼                              │                             ▼
 VIS帧组装                        ▼                            坦克混控 (tank-mix)
-  │                             UART0 swapped → STM32           │   left = thr + (st-1500)
-P0 SW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = thr - (st-1500)
+  │                             UART0 swapped → STM32           │   left = thr + (st-PWM_NEUTRAL)
+P0 HW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = thr - (st-PWM_NEUTRAL)
                                                                  ▼
-                                                               TIM4 PWM 输出
-                                                                 │   PB8=左电机 ESC
-                                                                 │   PB9=右电机 ESC
+                                                               TIM3 PWM 输出
+                                                                 │   PB0=左电机 ESC
+                                                                 │   PB1=右电机 ESC
                                                                  ▼
                                                               安全监控
-                                                                · 500ms 超时
-                                                                · 10s 休眠检测
-                                                                · PS2 断连保护
+                                                                · 60s 无操作锁定
+                                                                · 30s 休眠锁定
+                                                                · PS2 断连锁定
 ```
 
 ---
@@ -115,16 +115,16 @@ P0 SW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = 
 
 > **动力方案变更**: 实车为两台三相无刷电机，需要双路独立无刷电调 + MCU 坦克混控。
 > **ESP8266 已成为永久 L2 控制器** (替代 ESP32)。ESP32_Solo/ 保留作为参考实现。
-> **待推进**: 无刷电调选型采购, ESP8266↔STM32 串口打通, 坦克混控实车验证, 自动跟随联调
+> **待推进**: 坦克混控实车验证, 自动跟随联调
 
 ### 0.1 STM32F103C8T6 开发环境 ✅ 完成
 - [x] PlatformIO + STM32Duino, USB-TTL 烧录 (CH9102, COM11 @ 115200)
 - [x] Blink 验证 (PA4 LED2)
-- [x] **PWM 输出验证**: TIM4 CH3=PB8(左电机), CH4=PB9(右电机), 50Hz, 坦克混控就绪
+- [x] **PWM 输出验证**: TIM3 CH3=PB0(左电机 H8), CH4=PB1(右电机 H9), 50Hz, 坦克混控
 - [x] **PS2 手柄驱动**: WHEELTEC 引脚 (PB12=CLK, PB13=CS, PB14=CMD, PB15=DATA)
 - [x] **蜂鸣器**: PA3 (经跳线→S8050, active-HIGH)
-- [x] **安全功能**: 上电锁定, START 解锁, 500ms 超时, 10s 休眠检测
-- [x] **代码精简**: 424 行, RAM 7.1%, Flash 11.3%
+- [x] **安全功能**: 上电锁定, START 解锁, 无操作 60s 锁定, 休眠 30s 锁定
+- [x] **代码重构**: 参数集中管理, RAM 13.5%, Flash 15.3%
 
 ### 0.2 ESP8266 全功能控制器 ✅ 完成
 - [x] VIS 接收: D5(GPIO14) SoftwareSerial @ 4800, 97%+ 成功率
@@ -147,7 +147,7 @@ P0 SW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = 
 | ESP8266 NodeMCU V3 | **已有** | L2 决策+WiFi |
 | OpenMV Cam N6 + VL53L1X | **已有** | L1 感知 |
 | 三相无刷电机 ×2 | **随车已有** | 左右履带独立驱动 |
-| 三相无刷电调 ×2 | ⏳ **待采购** | 独立控制左右电机 (需双向/正反转) |
+| ZTW Seal G2 无刷电调 ×2 | **已有** | 独立控制左右电机 (PWM_NEUTRAL=1275μs) |
 | 48V→5V 10A 降压模块 | **已到货** | 控制供电 |
 | 48V 89Ah 锂电池 | **随车已有** | 动力电源 |
 | PS2 无线手柄 | **已有** | 遥控测试 |
@@ -160,19 +160,17 @@ P0 SW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = 
 
 ## Phase 1 — STM32 底层驱动 (PS2 遥控部分已完成 ✅, 无刷电调待验证)
 
-### 1.1 ESC PWM 控制 ✅ 代码就绪
-- [x] TIM4 CH3/CH4 50Hz, 1000-2000μs, 中位 1500μs
-- [x] 坦克混控: `left = thr + (st-1500)`, `right = thr - (st-1500)`, 钳位 1000-2000
-- [x] PB8=左电机, PB9=右电机
-- [ ] 无刷电调选型采购 (需双向正反转 + 48V电压兼容)
-- [ ] 电调接线 + 坦克混控实车测试
-- [ ] ESC 上电自检流程验证
+### 1.1 ESC PWM 控制 ✅ 已完成
+- [x] TIM3 CH3=PB0(左 H8), CH4=PB1(右 H9), 50Hz PWM, 坦克混控
+- [x] ZTW Seal G2 电调已采购 + 中位标定 (PWM_NEUTRAL=1275, MIN=650, MAX=1900)
+- [x] 坦克混控: `left = thr + (st-PWM_NEUTRAL)`, `right = thr - (st-PWM_NEUTRAL)`
+- [ ] 电调接线 + 坦克混控实车测试 (PB0/PB1→H8/H9→ESC)
 
 ### 1.2 PS2 手柄 ✅
 - [x] WHEELTEC 引脚映射 + bit-bang SPI 驱动
 - [x] 右摇杆上下=油门, 左摇杆左右=转向
 - [x] START 解锁/锁定, 蜂鸣提示
-- [x] 控制器休眠 10s 自动锁定
+- [x] 控制器休眠 30s 自动锁定
 - [x] SELECT 切换 PS2/ESP8266 控制源
 
 ### 1.3 ESP8266 串口通信 ✅ 已打通
@@ -184,11 +182,12 @@ ESP8266 → STM32 下行 (每 50ms):
 - [x] STM32 USART3 (PB10/PB11) 接收 + CRC8 校验 (SerialESP)
 - [x] PS2 优先 (SELECT 切换), ESP8266 备选
 - [x] ESP 模式下 MotorCmd → 坦克混控 → 左右 PWM
-- [x] 命令超时 PS2/ESP 通用 (500ms 无命令 → 归中)
+- [x] 命令超时 PS2/ESP 通用 (无操作 60s → 自动锁定+蜂鸣)
 
 ### 1.4 安全机制
-- [x] 命令超时 500ms → STOP
-- [x] PS2 断连 → 自动锁定 + 归中
+- [x] 摇杆无操作 60s → 自动锁定 + 蜂鸣
+- [x] PS2 数据冻结 30s → 休眠锁定 + 蜂鸣
+- [x] PS2 断连 → 立即锁定 + 归中
 - [ ] 急停按钮 GPIO + 继电器 (硬件待采购)
 - [ ] 过流检测 ADC (硬件待确认)
 
@@ -214,7 +213,7 @@ ESP8266 → STM32 下行 (每 50ms):
 **下行 (ESP8266 → STM32, 每 50ms)**:
 ```
 [0xAA] [throttle_lo] [throttle_hi] [steering_lo] [steering_hi] [CRC8]
-6 bytes, uint16_t throttle/steering in μs (1000-2000, 中位 1500)
+6 bytes, uint16_t throttle/steering in μs (650-1900, 中位 1275)
 ```
 STM32 收到后经坦克混控转换为左/右 PWM。
 
@@ -226,7 +225,7 @@ STM32 收到后经坦克混控转换为左/右 PWM。
 
 - [x] ESP8266 端 UART0 swapped 发送 (代码就绪)
 - [x] STM32 端 USART3 (PB10/PB11) 接收 + CRC8 校验 (已实现)
-- [x] 命令超时 PS2/ESP 通用 (500ms → 归中)
+- [x] 无操作 60s 自动锁定 (基于摇杆值变化检测)
 - [x] PS2 SELECT 键切换控制源
 
 ---
