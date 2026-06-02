@@ -4,10 +4,10 @@
  * 功能:
  *   1. PS2 手柄控制 (CN4: PB12-PB15) — 手动遥控, 优先于 ESP8266
  *   2. USART3 (PB10=TX, PB11=RX) 接收 ESP8266 MotorCmd 下行协议
- *   3. TIM4 CH3 (PB8) → 左电机 ESC, CH4 (PB9) → 右电机 ESC
- *   4. 50Hz 标准舵机 PWM (1000-2000μs, 中位 1500μs)
+ *   3. TIM3 CH3 (PB0) → 左电机 ESC, CH4 (PB1) → 右电机 ESC
+ *   4. 50Hz PWM: 中位1000μs(停止), 上限2000(前进), 下限0(后退)
  *   5. 坦克混控 (tank-mix): throttle+steering → 左/右独立 PWM
- *   6. 500ms 命令超时 → 自动归中 (FAILSAFE)
+ *   6. 20s 命令超时 → 自动归中 (FAILSAFE)
  *   7. LED2 (PA4, 蓝灯) 模式指示 + 蜂鸣器 (PA3, 经跳线, active-HIGH)
  *
  * 控制优先级: PS2 手柄 (已连接时) > ESP8266 串口
@@ -17,7 +17,7 @@
  *   USB-UART: CH9102 via USART1 (PA9=TX, PA10=RX) — debug/monitor
  *   PS2: CN4 6P (PB12=CLK, PB13=CS, PB14=CMD, PB15=DATA) — WHEELTEC 定义
  *   ESP8266: USART3 (PB10=TX, PB11=RX) ← ESP8266 D7/D8
- *   ESC: PB8=左电机(→H6), PB9=右电机(→H7) — 两路三相无刷电调独立控制
+ *   ESC: PB0=左电机(→H8), PB1=右电机(→H9) — 两路三相无刷电调独立控制
  *   烧录: PlatformIO serial @ 115200, -dtr,rts,dtr,,,,
  */
 
@@ -25,11 +25,11 @@
 #include "oled.h"
 
 // ─── PWM 常量 ───
-constexpr uint16_t PWM_NEUTRAL    = 1500;
-constexpr uint16_t PWM_MIN        = 1000;
-constexpr uint16_t PWM_MAX        = 2000;
-constexpr int      JOY_DEADBAND   = 5;     // 摇杆中位死区 (±5 / 128 ≈ ±20μs)
-constexpr uint32_t CMD_TIMEOUT_MS = 500;
+constexpr uint16_t PWM_NEUTRAL    = 1275;  // 中位=停止
+constexpr uint16_t PWM_MIN        = 650;
+constexpr uint16_t PWM_MAX        = 1900;
+constexpr int      JOY_DEADBAND   = 5;
+constexpr uint32_t CMD_TIMEOUT_MS = 20000;
 constexpr uint32_t ESC_INIT_DELAY = 3000;
 
 constexpr uint8_t PIN_LED2 = PA4;
@@ -79,34 +79,34 @@ static uint8_t crc8(const uint8_t *data, size_t len) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ESC PWM (TIM4: PB8=左电机, PB9=右电机, 50Hz)
+// ESC PWM (TIM3: PB0=左电机, PB1=右电机, 50Hz)
 // 双路独立三相无刷电调, 坦克混控由 MCU 完成
 // ═══════════════════════════════════════════════════════════════
 
 static void escInit() {
-    RCC->APB1ENR |= RCC_APB1ENR_TIM4EN;
+    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
     RCC->APB2ENR |= RCC_APB2ENR_IOPBEN;
 
-    GPIOB->CRH &= ~(0xF << 0 | 0xF << 4);     // 清除 PB8, PB9
-    GPIOB->CRH |= (0xB << 0 | 0xB << 4);      // PB8/PB9: AF push-pull, 50MHz
+    GPIOB->CRL &= ~(0xF << 0 | 0xF << 4);     // 清除 PB0, PB1
+    GPIOB->CRL |= (0xB << 0 | 0xB << 4);      // PB0/PB1: AF push-pull, 50MHz
 
-    TIM4->PSC  = 71;
-    TIM4->ARR  = 19999;
-    TIM4->CCR3 = PWM_NEUTRAL;
-    TIM4->CCR4 = PWM_NEUTRAL;
+    TIM3->PSC  = 71;
+    TIM3->ARR  = 19999;
+    TIM3->CCR3 = PWM_NEUTRAL;
+    TIM3->CCR4 = PWM_NEUTRAL;
 
-    TIM4->CCMR2 = (6 << 12) | (1 << 11) | (6 << 4) | (1 << 3);
-    TIM4->CCER  = TIM_CCER_CC3E | TIM_CCER_CC4E;
-    TIM4->CR1   = TIM_CR1_ARPE;
-    TIM4->EGR   = TIM_EGR_UG;
-    TIM4->CR1  |= TIM_CR1_CEN;
+    TIM3->CCMR2 = (6 << 12) | (1 << 11) | (6 << 4) | (1 << 3);
+    TIM3->CCER  = TIM_CCER_CC3E | TIM_CCER_CC4E;
+    TIM3->CR1   = TIM_CR1_ARPE;
+    TIM3->EGR   = TIM_EGR_UG;
+    TIM3->CR1  |= TIM_CR1_CEN;
 
-    Serial.print("[ESC] TIM4 50Hz: PB8(左电机) PB9(右电机)\n");
+    Serial.print("[ESC] TIM3 50Hz: PB0(左电机) PB1(右电机)\n");
 }
 
 // 坦克混控: throttle+steering → 左/右独立 PWM
-// throttle: 1000-2000μs, 1500=停, >1500=前进, <1500=后退
-// steering: 1000-2000μs, 1500=直行, >1500=右转, <1500=左转
+// throttle: 0-2000μs, 1000=停, >1000=前进, <1000=后退
+// steering: 中位1000=直行, >1000=右转, <1000=左转
 static void escSet(uint16_t throttle, uint16_t steering) {
     int sOff = (int)steering - (int)PWM_NEUTRAL;
     int left  = (int)throttle + sOff;
@@ -115,8 +115,8 @@ static void escSet(uint16_t throttle, uint16_t steering) {
     if (left  > PWM_MAX) left  = PWM_MAX;
     if (right < PWM_MIN) right = PWM_MIN;
     if (right > PWM_MAX) right = PWM_MAX;
-    TIM4->CCR3 = (uint16_t)left;   // PB8 → 左电机
-    TIM4->CCR4 = (uint16_t)right;  // PB9 → 右电机
+    TIM3->CCR3 = (uint16_t)left;   // PB0 → 左电机
+    TIM3->CCR4 = (uint16_t)right;  // PB1 → 右电机
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -221,22 +221,24 @@ static bool ps2Config() {
     return false;
 }
 
-// 摇杆 → PWM 映射 (满幅 1000-2000)
-// LY: 0=上, 128=中, 255=下  → 油门: 上=前进
-// LX: 0=左, 128=中, 255=右  → 转向: 右=右转
+// 摇杆 → PWM 映射
+// 油门: 中位1000(停), 上限2000(前进), 下限0(后退)
+// 转向: 中位1000(直行), >1000=右转, <1000=左转
+// LY: 0=上, 128=中, 255=下
+// LX: 0=左, 128=中, 255=右
 static uint16_t joyToThrottle(uint8_t ly) {
-    int off = 128 - (int)ly;
+    int off = 128 - (int)ly;                     // 上推=正值
     if (abs(off) <= JOY_DEADBAND) return PWM_NEUTRAL;
-    int val = (int)PWM_NEUTRAL + off * 500 / 128;
+    int val = (int)PWM_NEUTRAL + off * 1000 / 128;
     if (val < PWM_MIN) val = PWM_MIN;
     if (val > PWM_MAX) val = PWM_MAX;
     return (uint16_t)val;
 }
 
 static uint16_t joyToSteering(uint8_t lx) {
-    int off = (int)lx - 128;
+    int off = (int)lx - 128;                     // 右推=正值
     if (abs(off) <= JOY_DEADBAND) return PWM_NEUTRAL;
-    int val = (int)PWM_NEUTRAL + off * 500 / 128;
+    int val = (int)PWM_NEUTRAL + off * 700 / 128;
     if (val < PWM_MIN) val = PWM_MIN;
     if (val > PWM_MAX) val = PWM_MAX;
     return (uint16_t)val;
@@ -274,7 +276,7 @@ void setup() {
     digitalWrite(PIN_LED2, HIGH);
 
     escInit();
-    Serial.print("[ESC] TIM4 50Hz: PB8(左) PB9(右) — 上电输出中位, ");
+    Serial.print("[ESC] TIM3 50Hz: PB0(左) PB1(右) — 上电输出中位, ");
 
     ps2Init();
     Serial.print("PS2: ");
@@ -361,11 +363,9 @@ void loop() {
             lastSel = selRel;
 
             // PS2 模式: 摇杆→油门/转向→坦克混控→左/右 PWM
-            // LOCKED=满幅(ESC校准)  ARMED=安全限幅
-            // LOCKED 时同样输出 PWM, 方便 ESC 编程/校准
             uint16_t thr = joyToThrottle(lx);
             uint16_t str = joyToSteering(ly);
-            if (g_escReady && !g_espMode) {
+            if (g_motorArmed && g_escReady && !g_espMode) {
                 escSet(thr, str);
                 g_throttle = thr;
                 g_steering = str;
@@ -429,7 +429,7 @@ void loop() {
         }
     }
 
-    // ─── 3. 命令超时 (PS2/ESP 通用, 500ms 无有效命令 → 归中) ───
+    // ─── 3. 命令超时 (PS2/ESP 通用, 20s 无有效命令 → 归中) ───
     if (g_escReady && millis() - g_lastCmdMs > CMD_TIMEOUT_MS)
         escSet(PWM_NEUTRAL, PWM_NEUTRAL);
 
@@ -454,20 +454,22 @@ void loop() {
         lastStat = now;
         const char* dir;
         int t = (int)g_throttle, s = (int)g_steering;
-        if      (t > 1520 && s > 1520) dir = "FWD+RGT";
-        else if (t > 1520 && s < 1480) dir = "FWD+LFT";
-        else if (t < 1480 && s > 1520) dir = "REV+RGT";
-        else if (t < 1480 && s < 1480) dir = "REV+LFT";
-        else if (t > 1520) dir = "FWD";
-        else if (t < 1480) dir = "REV";
-        else if (s > 1520) dir = "RGT";
-        else if (s < 1480) dir = "LFT";
-        else               dir = "STOP";
+        int hi = (int)PWM_NEUTRAL + 20;  // 前进/右转阈值
+        int lo = (int)PWM_NEUTRAL - 20;  // 后退/左转阈值
+        if      (t > hi && s > hi) dir = "FWD+RGT";
+        else if (t > hi && s < lo) dir = "FWD+LFT";
+        else if (t < lo && s > hi) dir = "REV+RGT";
+        else if (t < lo && s < lo) dir = "REV+LFT";
+        else if (t > hi) dir = "FWD";
+        else if (t < lo) dir = "REV";
+        else if (s > hi) dir = "RGT";
+        else if (s < lo) dir = "LFT";
+        else              dir = "STOP";
 
         // 计算坦克混控后左/右 PWM 值 (用于调试显示)
         int sOff = s - (int)PWM_NEUTRAL;
-        int left  = t + sOff; if (left  < 1000) left  = 1000; if (left  > 2000) left  = 2000;
-        int right = t - sOff; if (right < 1000) right = 1000; if (right > 2000) right = 2000;
+        int left  = t + sOff; if (left  < (int)PWM_MIN) left = PWM_MIN; if (left > (int)PWM_MAX) left = PWM_MAX;
+        int right = t - sOff; if (right < (int)PWM_MIN) right = PWM_MIN; if (right > (int)PWM_MAX) right = PWM_MAX;
 
         Serial.print(g_espMode ? "ESP" : "PS2");
         Serial.print(ps2Ok ? (g_motorArmed ? " ARM" : " LCK") : " ---");
