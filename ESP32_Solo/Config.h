@@ -56,6 +56,14 @@ constexpr uint32_t CMD_TIMEOUT_MS        = 500;
 constexpr uint32_t VISION_TIMEOUT_MS     = 700;
 constexpr uint32_t ESC_INIT_DELAY_MS     = 3000;
 
+// ─── 系统参数 ───
+constexpr uint32_t DEBUG_BAUD       = 115200;  // USB 串口波特率
+constexpr uint32_t VIS_BAUD         = 4800;    // OpenMV→ESP32 VIS 波特率
+
+// ─── VIS 接收 ───
+constexpr uint16_t VIS_BUF_SIZE     = 256;     // VIS 行缓冲区 (字节)
+constexpr uint32_t DIAG_INTERVAL_MS = 5000;    // VIS 诊断输出间隔 (0=关闭)
+
 // ─── MotorCmd ───
 // throttle/steering 发送到 STM32 后由坦克混控转换为左/右电机 PWM
 // 范围 650-1900μs, 中位 1275μs (与 STM32 C06B 一致)

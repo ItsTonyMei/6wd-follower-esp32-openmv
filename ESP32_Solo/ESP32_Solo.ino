@@ -26,7 +26,7 @@ WebServer server(80);
 FollowLogic followLogic;
 
 // ─── VIS 接收 buffer ───
-char visLine[256];
+char visLine[VIS_BUF_SIZE];
 int  visLen = 0;
 
 // ─── VIS 最新数据 ───
@@ -281,7 +281,7 @@ update();setInterval(update,300);
 
 // ─── Setup ───
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(DEBUG_BAUD);
     delay(500);
     Serial.println("\n=== ESP32 L2 Controller ===");
     Serial.print("[UART] STM32 via Serial2 @ "); Serial.print(STM32_BAUD);
@@ -293,7 +293,7 @@ void setup() {
     Serial2.begin(STM32_BAUD, SERIAL_8N1, PIN_STM32_RX, PIN_STM32_TX);
 
     // VIS SoftwareSerial
-    visSerial.begin(4800);
+    visSerial.begin(VIS_BAUD);
     Serial.print("[VIS] GPIO"); Serial.print(PIN_VIS_RX);
     Serial.println(" SoftwareSerial @ 4800 baud");
 
@@ -356,7 +356,7 @@ void loop() {
     static unsigned long lastDiagMs = 0;
     static unsigned long lastTotalFrames = 0;
     unsigned long now = millis();
-    if (now - lastDiagMs >= 5000) {
+    if (DIAG_INTERVAL_MS > 0 && now - lastDiagMs >= DIAG_INTERVAL_MS) {
         lastDiagMs = now;
         unsigned long delta = totalFrames - lastTotalFrames;
         Serial.print("[VIS diag] total="); Serial.print(totalFrames);

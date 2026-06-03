@@ -28,14 +28,17 @@ else:
     _MODEL_PATH = "/rom/yolo_lc_192.tflite"
     _CAM_W, _CAM_H = 320, 240
 
-# VIS 协议坐标空间 (ESP8266 FollowLogic 期望 192x192)
+# VIS 协议坐标空间 (ESP32 FollowLogic 期望 192x192)
 _VIS_W, _VIS_H = 192, 192
 _VIS_CX, _VIS_CY = 96, 96
 
 # ============================================================================
-# Configuration
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    配 置 参 数 (所有可调参数集中此处)                      ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 # ============================================================================
 
+# ─── 相机 ───
 CAMERA_FRAMESIZE    = _cam_mod.QVGA      # 320x240
 CAMERA_PIXFORMAT    = _cam_mod.RGB565
 CAMERA_CONTRAST     = 3
@@ -44,28 +47,24 @@ CAMERA_HMIRROR      = False
 CAMERA_VFLIP        = False
 CAMERA_STABILIZE_MS = 2000
 
-# N6: NPU 实时推理无需跳帧, H7: 跳 2 帧 ~10 FPS
-SENSOR_SKIP_FRAMES  = 0 if IS_N6 else 2
+# ─── 推理 ───
+SENSOR_SKIP_FRAMES  = 0 if IS_N6 else 2  # N6: NPU 实时, H7: 跳2帧 ~10FPS
+DETECTION_THRESHOLD = 0.4                # YOLO 置信度阈值
 
-DETECTION_THRESHOLD  = 0.4
+# ─── VIS 输出 (P2 UART4 TX → ESP32 GPIO4) ───
+VIS_BAUD        = 4800
+VIS_INTERVAL_MS = 200                    # VIS 帧发送间隔 (ms)
 
-# ---- 距离估计: ToF 主信号 + 视觉备用 + EMA 平滑 ----
-# VL53L1X ToF 有效范围
-TOF_MIN_VALID = 40     # mm, < this → 无效 (遮挡/太近)
-TOF_MAX_VALID = 4000   # mm, > this → 无效 (超量程, 退回视觉)
-
-# ToF mm → distScore 分段线性映射
-# distScore 含义 (与 ESP32 FollowLogic 对齐):
-#   >= 0.85 → STOP,  0.65-0.85 → SLOW,  0.30-0.65 → MID,  < 0.30 → FAR
-TOF_STOP_MM   = 500    # < this → distScore = 1.0 (STOP)
-TOF_NEAR_MM   = 1000   # STOP → SLOW 过渡终点
-TOF_MID_MM    = 2000   # SLOW → FAR 过渡终点 (~1.5m 映射到 ~0.55)
-TOF_FAR_MM    = 4000   # FAR → 全速追赶
-
-# EMA 平滑: alpha 越大响应越快，越小越平滑 (0.0-1.0)
-TOF_SMOOTH_ALPHA = 0.3
-
-# 视觉备用保留原有阈值 (ToF 无效时启用)
+# ─── 距离估计: ToF 主信号 + 视觉备用 + EMA 平滑 ───
+TOF_MIN_VALID = 40                       # mm, < this → 无效 (遮挡/太近)
+TOF_MAX_VALID = 4000                     # mm, > this → 无效 (超量程, 退回视觉)
+# ToF mm → distScore 分段线性映射 (与 ESP32 FollowLogic 阈值对齐: >=0.85 STOP, >=0.65 SLOW, >=0.30 MID)
+TOF_STOP_MM   = 500                      # < this → distScore = 1.0
+TOF_NEAR_MM   = 1000                     # STOP → SLOW 过渡
+TOF_MID_MM    = 2000                     # SLOW → FAR 过渡 (~1.5m → 0.55)
+TOF_FAR_MM    = 4000                     # FAR → 全速追赶
+TOF_SMOOTH_ALPHA = 0.3                   # EMA 平滑系数 (0-1, 越小越平滑)
+# 视觉备用参数 (ToF 无效时启用)
 AREA_VERY_CLOSE = 0.50
 AREA_CLOSE      = 0.30
 AREA_FAR        = 0.10
@@ -75,13 +74,17 @@ WEIGHT_FAR_FEETY = 0.8;    WEIGHT_FAR_AREA  = 0.2
 TOP_Y_THRESHOLD = 10
 FEETY_CLOSE = 155; FEETY_FAR = 80
 
-TRACK_DEADBAND         = 0.08
-NO_PERSON_STOP_FRAMES  = 5
-DRAW_DEBUG     = True
-PRINT_EVERY_MS = 500
-GC_EVERY_FRAMES = 50 if IS_N6 else 10  # N6 RAM 更充裕
+# ─── LED 指示 (N6 RGB: 红=错误, 绿=有人+ToF有效, 蓝=扫描中) ───
+LED_UPDATE_EVERY_N = 2                   # 每 N 帧更新一次 LED (省 I2C)
+LED_TOF_LOST_BLINK = 8                   # ToF 丢失时绿闪周期 (帧)
 
-# ---- Validate ----
+# ─── 调试与性能 ───
+DRAW_DEBUG        = True
+PRINT_EVERY_MS    = 500                  # 串口状态打印间隔 (ms)
+GC_EVERY_FRAMES   = 50 if IS_N6 else 10  # 垃圾回收间隔 (N6 RAM 更充裕)
+NO_PERSON_STOP_FRAMES = 5                # 连续无人帧数 (暂未使用)
+
+# ─── 校验 ───
 assert 0.0 <= DETECTION_THRESHOLD <= 1.0
 assert AREA_FAR < AREA_CLOSE < AREA_VERY_CLOSE
 assert NO_PERSON_STOP_FRAMES > 0
@@ -151,14 +154,9 @@ if person_idx is None:
     person_idx = 0
 
 # ============================================================================
-# VIS 输出: P0 硬件 UART(3) @ 4800 baud → ESP8266 D5 (GPIO14)
-# VL53L1X → I2C(2) (P4=SCL, P5=SDA) — 独占, 无冲突
+# VIS UART 初始化: P2 = UART4 TX (STM32N657, P4/P5 被 ToF I2C2 占用)
 # ============================================================================
 
-VIS_BAUD      = 4800
-VIS_INTERVAL_MS = 200   # 每 200ms 发送一次 VIS 帧
-
-# P2 = UART4 TX (STM32N657 官方引脚映射, P4/P5 被 ToF I2C2 占用)
 from machine import UART, Pin as _Pin
 _p2 = _Pin("P2", mode=_Pin.ALT, alt=_Pin.AF8_UART4)
 vis_uart = UART(4, VIS_BAUD)
@@ -323,7 +321,7 @@ def update_led(has_person, tof_valid, error=False):
                 _LED(2).on()
         _last_led_state = new_state
     elif new_state == 4:    # ToF 丢失时绿闪
-        if _led_counter % 8 == 0:
+        if _led_counter % LED_TOF_LOST_BLINK == 0:
             _LED(2).toggle()
 
 # ============================================================================
@@ -404,7 +402,7 @@ while True:
 
     # LED 状态更新 (每 2 帧一次, 节省 I2C)
     tof_ok = TOF_ENABLED and TOF_MIN_VALID <= tof_distance <= TOF_MAX_VALID
-    if frame_counter % 2 == 0:
+    if frame_counter % LED_UPDATE_EVERY_N == 0:
         update_led(person_rect is not None, tof_ok)
 
     # VIS output (scale coords to 192x192 for ESP32 FollowLogic compatibility)
