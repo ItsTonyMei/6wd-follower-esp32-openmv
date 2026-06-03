@@ -149,9 +149,10 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
 .col{flex:1}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-.bar-wrap{height:10px;background:#21262d;border-radius:5px;overflow:hidden;margin:4px 0}
+.bar-wrap{height:10px;background:#21262d;border-radius:5px;overflow:hidden;margin:4px 0;position:relative}
 .bar-fill{height:100%;border-radius:5px;transition:width .3s,background .3s}
-.r{background:#da3633}.y{background:#d2991d}.g{background:#238636}
+.bar-target{position:absolute;top:0;left:50%;width:3px;height:100%;background:#fff;opacity:.6;z-index:2;border-radius:1px}
+.r{background:#da3633}.y{background:#d2991d}.g{background:#238636}.b{background:#58a6ff}
 .footer{text-align:center;font-size:10px;color:#484f58;margin-top:10px}
 </style></head><body>
 
@@ -168,8 +169,8 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
 <div class="card">
   <div class="row"><div class="lbl">控制状态</div><span id="car-badge" class="badge idle">STOP</span></div>
   <div class="grid2" style="margin-top:8px">
-    <div><div class="lbl">油门 (T)</div><div class="val" id="car-th">1500 μs</div></div>
-    <div><div class="lbl">转向 (S)</div><div class="val" id="car-st">1500 μs</div></div>
+    <div><div class="lbl">油门 (T)</div><div class="val" id="car-th">1275 μs</div></div>
+    <div><div class="lbl">转向 (S)</div><div class="val" id="car-st">1275 μs</div></div>
   </div>
 </div>
 
@@ -182,8 +183,8 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
     <div><div class="lbl">数据时效</div><div class="val" id="vis-age" style="font-size:13px">--</div></div>
   </div>
   <div style="margin-top:8px"><div class="lbl">距离估计</div>
-    <div class="bar-wrap"><div class="bar-fill" id="dist-bar" style="width:0%"></div></div>
-    <div class="row" style="margin-top:2px"><span class="lbl">近</span><span class="lbl">远</span></div>
+    <div class="bar-wrap"><div class="bar-fill" id="dist-bar" style="width:0%"></div><div class="bar-target"></div></div>
+    <div class="row" style="margin-top:2px"><span class="lbl">后退</span><span class="lbl">1.5m</span><span class="lbl">前进</span></div>
   </div>
   <div class="grid2" style="margin-top:8px">
     <div><div class="lbl">ToF 测距</div><div class="val" id="vis-tof">--</div></div>
@@ -228,11 +229,14 @@ function update(){
     let v=d.vis,c=d.car,s=d.sys,x=d.rx;
 
     // Car
-    let th=c.th||1500,st=c.st||1500,act='STOP';
-    if(th>1520)act='FWD';else if(th<1480)act='REV';
-    if(st>1520)act+=' +R';else if(st<1480)act+=' +L';
+    let N=1275,th=c.th||N,st=c.st||N,d=th-N,act='STOP',acl='idle';
+    if(d>40){act='FWD';acl='ok';}
+    else if(d<-40){act='REV';acl='warn';}
+    if(Math.abs(d)>150)act=(d>0?'FAST_FWD':'FAST_REV');
+    else if(Math.abs(d)>60)act=(d>0?'SLOW_FWD':'SLOW_REV');
+    if(st>N+25)act+=' R';else if(st<N-25)act+=' L';
     let cb=document.getElementById('car-badge');
-    cb.textContent=act;cb.className='badge '+(act==='STOP'?'idle':'ok');
+    cb.textContent=act;cb.className='badge '+acl;
     document.getElementById('car-th').textContent=th+' μs';
     document.getElementById('car-st').textContent=st+' μs';
 
@@ -248,9 +252,12 @@ function update(){
     document.getElementById('vis-fy').textContent=v.hp?v.fy:'--';
     document.getElementById('vis-offset').textContent=v.hp?(v.cx-96)+' / '+v.cx:'--';
     document.getElementById('vis-size').textContent=v.hp?v.w+'x'+v.h:'--';
-    let bar=document.getElementById('dist-bar'),pct=Math.min(100,v.ds*100);
+    let ds=v.ds||0,pct=Math.min(100,ds*100);
+    let bar=document.getElementById('dist-bar');
     bar.style.width=pct+'%';
-    bar.className='bar-fill '+(v.ds>=0.85?'r':v.ds>=0.65?'y':'g');
+    // 双向: 0.5=目标(绿), >0.7=近(红), <0.3=远(蓝)
+    let bc=ds>=0.9?'r':ds>=0.65?'y':ds<=0.1?'b':ds<=0.3?'b':(ds>=0.45&&ds<=0.55)?'g':'y';
+    bar.className='bar-fill '+bc;
 
     // RX
     if(x){
