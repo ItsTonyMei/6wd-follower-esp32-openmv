@@ -41,9 +41,9 @@ constexpr char WIFI_PASS[] = "12345678";
 // ─── 双路无刷电调 PWM 参数 ───
 // 50Hz 舵机 PWM: 1000-2000μs, 中位 1500μs
 // MotorCmd {throttle, steering} → STM32 坦克混控 → 左/右独立 PWM
-constexpr uint16_t PWM_NEUTRAL         = 1500;
-constexpr uint16_t PWM_MIN             = 1000;
-constexpr uint16_t PWM_MAX             = 2000;
+constexpr uint16_t PWM_NEUTRAL         = 1275;  // 与 STM32 C06B 一致 (ZTW Seal G2 中位)
+constexpr uint16_t PWM_MIN             = 650;
+constexpr uint16_t PWM_MAX             = 1900;
 constexpr uint16_t MAX_THROTTLE_OFFSET = 400;
 constexpr uint16_t MAX_STEER_OFFSET    = 300;
 constexpr uint16_t THROTTLE_DEADBAND   = 20;
