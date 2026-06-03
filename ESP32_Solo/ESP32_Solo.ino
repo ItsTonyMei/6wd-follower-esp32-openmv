@@ -16,6 +16,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <SoftwareSerial.h>
+#include <esp_wifi.h>
 #include "Config.h"
 #include "FollowLogic.h"
 
@@ -302,6 +303,7 @@ void setup() {
 
     // WiFi AP
     WiFi.softAP(WIFI_SSID, WIFI_PASS);
+    esp_wifi_set_max_tx_power(80);  // 80 × 0.25 = 20 dBm (max)
     Serial.print("[WiFi] "); Serial.print(WIFI_SSID);
     Serial.print(" @ "); Serial.println(WiFi.softAPIP());
 
