@@ -1,30 +1,54 @@
 // ============================================================================
-// 履带车视觉跟随系统 — ESP32 L2 决策层
-// MCU: ESP32-WROOM-32U (DevKit V1), ESP32-D0WD-V3 rev3.1, 240MHz, 4MB Flash
-// HC6060A 混控款电调: throttle/steering PWM 脉宽经 STM32 转发
+// 履带车视觉跟随系统 — ESP32 精简 L2 控制器 (2026-06-03 重新启用)
+// MCU: ESP32-WROOM-32U (DevKit V1), 240MHz, 4MB Flash
+// 功能匹配 ESP8266: VIS接收 + FollowLogic + STM32通信 + WiFi Dashboard
+//
+// 引脚:
+//   GPIO4  ← OpenMV P0 HW UART(3) (SoftwareSerial, 4800 baud)
+//   GPIO17 → STM32 PB11 (Serial2 TX, 115200 baud)
+//   GPIO16 ← STM32 PB10 (Serial2 RX, 115200 baud)
+//   GPIO1/3 = UART0 USB-Serial (debug)
+//
+// 动力: 两台三相无刷电机 + 双路独立无刷 ESC
+// 控制: FollowLogic → MotorCmd {throttle, steering} → STM32 坦克混控 → 左/右 PWM
 // ============================================================================
 
 #include <WiFi.h>
-#include <esp_task_wdt.h>
-#include <freertos/queue.h>
-#include <freertos/semphr.h>
+#include <WebServer.h>
+#include <SoftwareSerial.h>
 #include "Config.h"
-#include "DashboardServer.h"
-#include "DataAggregator.h"
-#include "VisionBridge.h"
 #include "FollowLogic.h"
 
-DataAggregator    aggregator;
-DashboardServer  webServer;
-VisionBridge     visionBridge;
-FollowLogic      followLogic;
-QueueHandle_t    motorCmdQueue;
+// ─── 硬件 ───
+SoftwareSerial visSerial(PIN_VIS_RX, -1, false);  // RX only
+WebServer server(80);
+FollowLogic followLogic;
 
-static TaskHandle_t logicTaskHandle = nullptr;
-static TaskHandle_t motorTaskHandle = nullptr;
-static TaskHandle_t webTaskHandle   = nullptr;
+// ─── VIS 接收 buffer ───
+char visLine[256];
+int  visLen = 0;
 
-// ─── CRC8 (XOR-based, same as VIS protocol) ───
+// ─── VIS 最新数据 ───
+struct {
+    bool   valid = false;
+    bool   hasPerson = false;
+    int    cx = 0, cy = 0, w = 0, h = 0, feetY = 0;
+    float  conf = 0, distScore = 0;
+    int    tofDist = 0;
+    unsigned long ts = 0;
+} vis;
+
+// ─── 车辆状态 ───
+struct {
+    uint16_t throttle = PWM_NEUTRAL;
+    uint16_t steering = PWM_NEUTRAL;
+    unsigned long ts = 0;
+} car;
+
+// ─── VIS 帧统计 ───
+unsigned long totalFrames = 0, okFrames = 0, failFrames = 0;
+
+// ─── CRC8 (poly 0x07, 与 STM32 一致) ───
 static uint8_t crc8(const uint8_t *data, size_t len) {
     uint8_t crc = 0;
     while (len--) {
@@ -35,8 +59,8 @@ static uint8_t crc8(const uint8_t *data, size_t len) {
     return crc;
 }
 
-// ─── 发送 MotorCmd 到 STM32 (下行协议) ───
-// Frame: [0xAA] [throttle_lo] [throttle_hi] [steering_lo] [steering_hi] [CRC8]
+// ─── 发送 MotorCmd 到 STM32 (6-byte 下行帧) ───
+// Frame: [0xAA] [th_lo] [th_hi] [st_lo] [st_hi] [CRC8]
 static void sendMotorCmd(const MotorCmd& mc) {
     uint8_t buf[6];
     buf[0] = 0xAA;
@@ -48,125 +72,294 @@ static void sendMotorCmd(const MotorCmd& mc) {
     Serial2.write(buf, 6);
 }
 
-// ─── MainTask: VIS 接收 + FollowLogic 决策 (Core 0) ───
-void mainTaskFunc(void* param) {
-    Serial.println("[MainTask] started");
-    esp_task_wdt_add(NULL);
-    for (;;) {
-        esp_task_wdt_reset();
-        visionBridge.handle();
-        if (visionBridge.hasValidReading()) {
-            if (aggregator.lock(pdMS_TO_TICKS(10))) {
-                VisState vs;
-                vs.valid       = visionBridge.hasValidReading();
-                vs.hasPerson   = visionBridge.hasPerson();
-                vs.cx          = visionBridge.cx();
-                vs.cy          = visionBridge.cy();
-                vs.w           = visionBridge.w();
-                vs.h           = visionBridge.h();
-                vs.confidence  = visionBridge.confidence();
-                strncpy(vs.type, visionBridge.type(), sizeof(vs.type) - 1);
-                vs.distScore   = visionBridge.distScore();
-                vs.tofDistance = visionBridge.tofDistance();
-                vs.feetY       = visionBridge.feetY();
-                vs.timestamp   = millis();
-                aggregator.updateVis(vs);
-                aggregator.unlock();
-            }
-            MotorCmd mc = followLogic.update(
-                visionBridge.hasPerson(), visionBridge.cx(),
-                visionBridge.feetY(), visionBridge.distScore());
-            xQueueSend(motorCmdQueue, &mc, pdMS_TO_TICKS(10));
-        }
-        vTaskDelay(pdMS_TO_TICKS(5));
+// ─── VIS 帧解析 (无校验和 — OpenMV 链路极短, 误码率可忽略) ───
+static bool parseVisFrame(char* buf, int len) {
+    if (len < 4 || strncmp(buf, "VIS:", 4) != 0) return false;
+
+    char* p = buf + 4;
+    char* end = nullptr;
+
+    vis.cx     = (int)strtol(p, &end, 10); if (*end != ',') return false; p = end + 1;
+    vis.cy     = (int)strtol(p, &end, 10); if (*end != ',') return false; p = end + 1;
+    vis.w      = (int)strtol(p, &end, 10); if (*end != ',') return false; p = end + 1;
+    vis.h      = (int)strtol(p, &end, 10); if (*end != ',') return false; p = end + 1;
+    vis.feetY  = (int)strtol(p, &end, 10); if (*end != ',') return false; p = end + 1;
+    vis.conf   = strtof(p, &end);           if (*end != ',') return false; p = end + 1;
+
+    char* comma = strchr(p, ',');
+    if (!comma) return false;
+    *comma = '\0';
+    vis.hasPerson = (strcmp(p, "PERSON") == 0);
+    *comma = ',';
+    p = comma + 1;
+
+    vis.distScore = strtof(p, &end);
+
+    vis.tofDist = 0;
+    if (*end == ',') {
+        p = end + 1;
+        vis.tofDist = (int)strtol(p, &end, 10);
     }
+
+    vis.valid = true;
+    vis.ts = millis();
+    return true;
 }
 
-// ─── MotorTask: MotorCmd 消费 + Serial2 下行发送 (Core 0) ───
-void motorTaskFunc(void* param) {
-    Serial.println("[MotorTask] started");
-    esp_task_wdt_add(NULL);
+// ─── JSON 状态端点 ───
+void handleStatus() {
+    unsigned long now = millis();
+    unsigned long visAge = vis.valid ? (now - vis.ts) : 9999;
 
-    Serial2.begin(STM32_UART_BAUD, SERIAL_8N1, PIN_STM32_RX, PIN_STM32_TX);
-    MotorCmd mc = {PWM_NEUTRAL, PWM_NEUTRAL};
-
-    // 上电先发送中位信号，等 STM32 + ESC 自检完成
-    for (int i = 0; i < 60; i++) {  // 60 × 50ms = 3s
-        sendMotorCmd(mc);
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    Serial.println("[MotorTask] ESC init complete, running");
-
-    for (;;) {
-        esp_task_wdt_reset();
-
-        // 排空 queue，只保留最新一条
-        MotorCmd tmp;
-        while (xQueueReceive(motorCmdQueue, &tmp, 0)) {
-            mc = tmp;
-        }
-
-        sendMotorCmd(mc);
-
-        // 更新 CarState 供 Dashboard 显示
-        if (aggregator.lock(pdMS_TO_TICKS(10))) {
-            CarState cs;
-            cs.valid     = true;
-            cs.throttle  = mc.throttle;
-            cs.steering  = mc.steering;
-            cs.timestamp = millis();
-            aggregator.updateCar(cs);
-            aggregator.unlock();
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(STM32_CMD_INTERVAL_MS));
-    }
+    char json[512];
+    snprintf(json, sizeof(json),
+        "{"
+        "\"vis\":{\"v\":%d,\"hp\":%d,\"cx\":%d,\"cy\":%d,\"w\":%d,\"h\":%d,"
+        "\"conf\":%.2f,\"ds\":%.2f,\"tof\":%d,\"fy\":%d,\"age\":%lu,\"ts\":%lu},"
+        "\"car\":{\"th\":%u,\"st\":%u,\"ts\":%lu},"
+        "\"sys\":{\"uptime\":%lu,\"heap\":%u,\"wifi_clients\":%d},"
+        "\"rx\":{\"total\":%lu,\"ok\":%lu,\"fail\":%lu}}",
+        vis.valid, vis.hasPerson,
+        vis.cx, vis.cy, vis.w, vis.h,
+        vis.conf, vis.distScore, vis.tofDist, vis.feetY, visAge, vis.ts,
+        car.throttle, car.steering, car.ts,
+        now, ESP.getFreeHeap(), WiFi.softAPgetStationNum(),
+        totalFrames, okFrames, failFrames);
+    server.send(200, "application/json", json);
 }
 
-// ─── WebTask: WiFi Dashboard HTTP server (Core 1) ───
-void webTaskFunc(void* param) {
-    Serial.println("[WebTask] started");
-    esp_task_wdt_add(NULL);
-    for (;;) {
-        esp_task_wdt_reset();
-        webServer.handle();
-        vTaskDelay(pdMS_TO_TICKS(10));
+// ─── Dashboard HTML ───
+void handleRoot() {
+    String html = F(R"raw(
+<!DOCTYPE html><html lang="zh"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Rover ESP32</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,sans-serif;background:#0f1117;color:#c9d1d9;max-width:440px;margin:0 auto;padding:10px 10px 40px}
+h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bottom:1px solid #21262d}
+.card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px;margin-bottom:8px}
+.lbl{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.val{font-size:17px;font-weight:bold;color:#e6edf3}
+.badge{display:inline-block;padding:3px 10px;border-radius:10px;font-size:14px;font-weight:bold}
+.ok{background:#238636;color:#fff}.warn{background:#d2991d;color:#000}.err{background:#da3633;color:#fff}
+.idle{background:#30363d;color:#8b949e}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.col{flex:1}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.bar-wrap{height:10px;background:#21262d;border-radius:5px;overflow:hidden;margin:4px 0}
+.bar-fill{height:100%;border-radius:5px;transition:width .3s,background .3s}
+.r{background:#da3633}.y{background:#d2991d}.g{background:#238636}
+.footer{text-align:center;font-size:10px;color:#484f58;margin-top:10px}
+</style></head><body>
+
+<div class="card" style="display:flex;justify-content:space-between;align-items:center">
+  <div><div style="font-size:18px;font-weight:bold;color:#58a6ff">履带车视觉跟随</div>
+  <div class="lbl">ESP32 Dual BLDC</div></div>
+  <div style="text-align:right">
+    <div class="val" style="font-size:13px" id="sys-uptime">--</div>
+    <div class="lbl">运行时间</div>
+  </div>
+</div>
+
+<h2>车辆控制</h2>
+<div class="card">
+  <div class="row"><div class="lbl">控制状态</div><span id="car-badge" class="badge idle">STOP</span></div>
+  <div class="grid2" style="margin-top:8px">
+    <div><div class="lbl">油门 (T)</div><div class="val" id="car-th">1500 μs</div></div>
+    <div><div class="lbl">转向 (S)</div><div class="val" id="car-st">1500 μs</div></div>
+  </div>
+</div>
+
+<h2>视觉感知</h2>
+<div class="card">
+  <div class="row"><div class="lbl">检测状态</div><span id="vis-badge" class="badge idle">等待</span></div>
+  <div class="grid3" style="margin-top:8px">
+    <div><div class="lbl">置信度</div><div class="val" id="vis-conf">--</div></div>
+    <div><div class="lbl">距离分</div><div class="val" id="vis-ds">--</div></div>
+    <div><div class="lbl">数据时效</div><div class="val" id="vis-age" style="font-size:13px">--</div></div>
+  </div>
+  <div style="margin-top:8px"><div class="lbl">距离估计</div>
+    <div class="bar-wrap"><div class="bar-fill" id="dist-bar" style="width:0%"></div></div>
+    <div class="row" style="margin-top:2px"><span class="lbl">近</span><span class="lbl">远</span></div>
+  </div>
+  <div class="grid2" style="margin-top:8px">
+    <div><div class="lbl">ToF 测距</div><div class="val" id="vis-tof">--</div></div>
+    <div><div class="lbl">脚部 Y</div><div class="val" id="vis-fy">--</div></div>
+  </div>
+  <div class="grid2" style="margin-top:8px">
+    <div><div class="lbl">中心 X / 偏移</div><div class="val" id="vis-offset">--</div></div>
+    <div><div class="lbl">框 W×H</div><div class="val" id="vis-size">--</div></div>
+  </div>
+</div>
+
+<h2>通信状态</h2>
+<div class="card">
+  <div class="row">
+    <div><div class="lbl">VIS 帧成功率</div><div class="val" id="rx-rate">--</div></div>
+    <div><span id="rx-badge" class="badge ok">--</span></div>
+  </div>
+  <div class="grid3" style="margin-top:6px">
+    <div><div class="lbl">总帧</div><div class="val" id="rx-total" style="font-size:13px">--</div></div>
+    <div><div class="lbl">成功</div><div class="val" id="rx-ok" style="font-size:13px;color:#238636">--</div></div>
+    <div><div class="lbl">失败</div><div class="val" id="rx-fail" style="font-size:13px;color:#da3633">--</div></div>
+  </div>
+</div>
+
+<h2>系统</h2>
+<div class="card">
+  <div class="grid3">
+    <div><div class="lbl">WiFi 客户端</div><div class="val" id="sys-clients">--</div></div>
+    <div><div class="lbl">可用内存</div><div class="val" id="sys-heap">--</div></div>
+  </div>
+</div>
+
+<div class="footer" id="footer">--</div>
+
+<script>
+function ageLabel(ms){
+  if(ms>2000)return'超时';if(ms>1000)return'慢';
+  if(ms>500)return'正常';return'实时';
+}
+function update(){
+  fetch('/status').then(r=>r.json()).then(d=>{
+    let v=d.vis,c=d.car,s=d.sys,x=d.rx;
+
+    // Car
+    let th=c.th||1500,st=c.st||1500,act='STOP';
+    if(th>1520)act='FWD';else if(th<1480)act='REV';
+    if(st>1520)act+=' +R';else if(st<1480)act+=' +L';
+    let cb=document.getElementById('car-badge');
+    cb.textContent=act;cb.className='badge '+(act==='STOP'?'idle':'ok');
+    document.getElementById('car-th').textContent=th+' μs';
+    document.getElementById('car-st').textContent=st+' μs';
+
+    // Vis
+    let vb=document.getElementById('vis-badge');
+    if(v.v&&v.hp){vb.textContent='有人 PERSON';vb.className='badge ok';}
+    else if(v.v){vb.textContent='无人 SCAN';vb.className='badge warn';}
+    else{vb.textContent='等待数据';vb.className='badge idle';}
+    document.getElementById('vis-conf').textContent=v.hp?(v.conf*100).toFixed(0)+'%':'--';
+    document.getElementById('vis-ds').textContent=v.hp?v.ds.toFixed(2):'--';
+    document.getElementById('vis-age').textContent=v.v?(v.age||0)+'ms '+ageLabel(v.age||0):'--';
+    document.getElementById('vis-tof').textContent=v.tof>0?(v.tof/1000).toFixed(2)+'m':'--';
+    document.getElementById('vis-fy').textContent=v.hp?v.fy:'--';
+    document.getElementById('vis-offset').textContent=v.hp?(v.cx-96)+' / '+v.cx:'--';
+    document.getElementById('vis-size').textContent=v.hp?v.w+'x'+v.h:'--';
+    let bar=document.getElementById('dist-bar'),pct=Math.min(100,v.ds*100);
+    bar.style.width=pct+'%';
+    bar.className='bar-fill '+(v.ds>=0.85?'r':v.ds>=0.65?'y':'g');
+
+    // RX
+    if(x){
+      let rate=x.total?(x.ok*100/x.total).toFixed(1)+'%':'--';
+      document.getElementById('rx-rate').textContent=rate;
+      document.getElementById('rx-total').textContent=x.total;
+      document.getElementById('rx-ok').textContent=x.ok;
+      document.getElementById('rx-fail').textContent=x.fail;
+      let rb=document.getElementById('rx-badge');
+      let rv=x.total?x.ok*100/x.total:0;
+      rb.textContent=rv>95?'优秀':rv>80?'良好':rv>50?'一般':'差';
+      rb.className='badge '+(rv>95?'ok':rv>80?'warn':'err');
     }
+
+    // Sys
+    let m=Math.floor(s.uptime/60000),sec=Math.floor((s.uptime%60000)/1000);
+    document.getElementById('sys-uptime').textContent=m+'m '+sec+'s';
+    document.getElementById('sys-clients').textContent=(s.wifi_clients||0)+' 个';
+    document.getElementById('sys-heap').textContent=(s.heap/1024).toFixed(1)+' KB';
+    document.getElementById('footer').textContent=new Date().toLocaleTimeString()+' 更新';
+  }).catch(()=>{document.getElementById('footer').textContent='连接中...';});
+}
+update();setInterval(update,300);
+</script></body></html>
+)raw");
+    server.send(200, "text/html", html);
 }
 
+// ─── Setup ───
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println("\n====================================");
-    Serial.println("ESP32 L2 — HC6060A Mixed-Mode ESC");
-    Serial.println("====================================");
+    Serial.println("\n=== ESP32 L2 Controller ===");
+    Serial.print("[UART] STM32 via Serial2 @ "); Serial.print(STM32_BAUD);
+    Serial.print(" baud (TX=GPIO"); Serial.print(PIN_STM32_TX);
+    Serial.print(", RX=GPIO"); Serial.print(PIN_STM32_RX);
+    Serial.println(")");
 
-    visionBridge.begin();
-    SemaphoreHandle_t mtx = xSemaphoreCreateMutex();
-    aggregator.begin(mtx);
+    // STM32 UART
+    Serial2.begin(STM32_BAUD, SERIAL_8N1, PIN_STM32_RX, PIN_STM32_TX);
 
-    Serial.print("WiFi AP: "); Serial.print(WIFI_SSID);
+    // VIS SoftwareSerial
+    visSerial.begin(4800);
+    Serial.print("[VIS] GPIO"); Serial.print(PIN_VIS_RX);
+    Serial.println(" SoftwareSerial @ 4800 baud");
+
+    // LED
+    pinMode(PIN_LED, OUTPUT);
+    digitalWrite(PIN_LED, HIGH);
+
+    // WiFi AP
     WiFi.softAP(WIFI_SSID, WIFI_PASS);
-    Serial.print("  IP: "); Serial.println(WiFi.softAPIP());
-    delay(200);
-
-    motorCmdQueue = xQueueCreate(4, sizeof(MotorCmd));
-    webServer.begin(&aggregator);
-
-    xTaskCreatePinnedToCore(mainTaskFunc,  "MainTask",  TASK_STACK_SIZE, nullptr, 3, &logicTaskHandle, 0);
-    xTaskCreatePinnedToCore(motorTaskFunc, "MotorTask", TASK_STACK_SIZE, nullptr, 2, &motorTaskHandle, 0);
-    xTaskCreatePinnedToCore(webTaskFunc,   "WebTask",   TASK_STACK_SIZE, nullptr, 1, &webTaskHandle,  1);
-
-    Serial.println("=== System Ready ===");
-    Serial.print("  WiFi: "); Serial.print(WIFI_SSID);
+    Serial.print("[WiFi] "); Serial.print(WIFI_SSID);
     Serial.print(" @ "); Serial.println(WiFi.softAPIP());
-    Serial.println("  Dashboard: http://192.168.4.1");
-    Serial.print("  STM32 UART2: GPIO"); Serial.print(PIN_STM32_TX);
-    Serial.print("/GPIO"); Serial.print(PIN_STM32_RX);
-    Serial.print(" @ "); Serial.print(STM32_UART_BAUD); Serial.println(" baud");
-    Serial.println("  VIS: waiting for OpenMV...");
-    Serial.println("====================\n");
-    vTaskDelete(NULL);
+
+    // HTTP
+    server.on("/", handleRoot);
+    server.on("/status", handleStatus);
+    server.begin();
+    Serial.println("[HTTP] :80");
+
+    // ─── ESC 初始化: 3 秒中位信号 ───
+    MotorCmd neutral = {PWM_NEUTRAL, PWM_NEUTRAL};
+    unsigned long start = millis();
+    while (millis() - start < ESC_INIT_DELAY_MS) {
+        sendMotorCmd(neutral);
+        delay(50);
+    }
+    car.throttle = PWM_NEUTRAL;
+    car.steering = PWM_NEUTRAL;
+    car.ts = millis();
+    Serial.println("[ESC] Init complete");
+    Serial.println("=== Ready ===\n");
 }
 
-void loop() {}
+// ─── Loop ───
+void loop() {
+    server.handleClient();
+
+    // ─── 1. VIS 接收 (SoftwareSerial) ───
+    int c;
+    while ((c = visSerial.read()) >= 0 && c < 256) {
+        digitalWrite(PIN_LED, LOW);
+        if (c == '\n' || c == '\r') {
+            if (visLen > 0) {
+                visLine[visLen] = '\0';
+                totalFrames++;
+                if (parseVisFrame(visLine, visLen)) okFrames++;
+                else failFrames++;
+                visLen = 0;
+            }
+        } else if (visLen < (int)sizeof(visLine) - 1) {
+            visLine[visLen++] = (char)c;
+        }
+    }
+
+    // ─── 2. FollowLogic → MotorCmd (每 50ms) ───
+    static unsigned long lastCmdMs = 0;
+    unsigned long now = millis();
+    if (now - lastCmdMs >= STM32_CMD_INTERVAL_MS) {
+        lastCmdMs = now;
+        MotorCmd mc;
+        if (vis.valid && (now - vis.ts) < VISION_TIMEOUT_MS) {
+            mc = followLogic.update(vis.hasPerson, vis.cx, vis.feetY, vis.distScore);
+        } else {
+            mc = {PWM_NEUTRAL, PWM_NEUTRAL};
+        }
+        sendMotorCmd(mc);
+        car.throttle = mc.throttle;
+        car.steering = mc.steering;
+        car.ts = now;
+    }
+}

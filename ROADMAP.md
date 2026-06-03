@@ -17,7 +17,7 @@
 | **ESP8266 VIS 接收** | ✅ 已验证 | D5(GPIO14) SoftwareSerial @ 4800 ← N6, 97%+ 成功率 |
 | **ESP8266 WiFi Dashboard** | ✅ 已验证 | AP "Tracked Robot", HTTP :80, `/status` JSON |
 | **OpenMV N6** | ✅ 已验证 | YOLOv8n NPU 45FPS, VL53L1X ToF, VIS P0 HW UART(3) @ 4800 |
-| **ESP32** | ❌ 已废弃 | ESP8266 替代全部功能, 详见 `ESP32_Solo/DEPRECATED.md` |
+| **ESP32** | ✅ 重新启用 | 精简固件就绪 (2026-06-03)。4文件单线程架构，功能匹配 ESP8266。烧录需 `--no-stub`。GPIO2 LED 正常。详见 `ESP32_Solo/DEPRECATED.md` |
 | **HC6060A 有刷电调** | ❌ 已废弃 | 实车使用三相无刷电机, 替换为双路独立无刷电调 |
 | **ZTW Seal G2 无刷电调** | ✅ 已解决 | 核心发现: 该电调中位在~1275μs而非1500μs。STM32在1500μs时被电调判定为前进, FPV接收机因脉宽波形差异恰好匹配。修改PWM_NEUTRAL=1275后正常 |
 

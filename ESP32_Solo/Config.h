@@ -2,107 +2,62 @@
 #include <Arduino.h>
 
 // ============================================================================
-// 履带车视觉跟随系统 — ESP32 配置
-// 所有引脚、阈值、任务参数的单一起源 (single source of truth)
+// 履带车视觉跟随系统 — ESP32 精简配置 (2026-06-03 重新启用)
+// 功能与 ESP8266 一致: VIS接收 + FollowLogic + STM32通信 + WiFi Dashboard
 // ============================================================================
 //
-// 架构: OpenMV (L1感知) → ESP32-WROOM-32U DevKit V1 (L2决策) → STM32F103C8T6 (L3执行+安全)
-// 电机 PWM 直驱已迁移至 STM32，ESP32 通过 UART2 MotorCmd 间接控制。
-// 超声波 HC-SR04 已全部移除，距离测量由 OpenMV VL53L1X ToF 测距扩展板 (I2C) 负责。
-// ToF 距离数据 (mm) 通过 VIS 帧 distScore 字段融合传入 ESP32。
-//
-// 供电: 48V 89Ah 锂电池 → 48V→5V 10A 防水降压 → ESP32 (5V USB)
+// 架构: OpenMV (L1感知) → ESP32 (L2决策+WiFi) → STM32 (L3执行+安全)
+// 供电: 48V 89Ah 锂电池 → 48V→5V 10A 防水降压 → ESP32 (USB)
+// 动力: 两台三相无刷电机 + 双路独立无刷 ESC
+// STM32 端坦克混控: left = thr + (st-1500), right = thr - (st-1500)
 
-// ─── UART 引脚分配 ───
-// ┌──────────┬────────────────┬──────────────────────────────────────────┐
-// │  接口     │ 引脚            │ 用途                                     │
-// ├──────────┼────────────────┼──────────────────────────────────────────┤
-// │ UART0    │ GPIO1/3 (固定)  │ USB Serial — debug/monitor               │
-// │ UART1    │ RX=15, TX=4     │ ELRS 接收机 CRSF 协议 (420k baud)        │
-// │ UART2    │ TX=17, RX=16    │ STM32 USART3 双向 MotorCmd+遥测 (115200) │
-// │ (Phase0) │ ESP8266 WiFi    │ VIS 数据经 ESP8266 Bridge 转发            │
-// └──────────┴────────────────┴──────────────────────────────────────────┘
+// ─── 引脚分配 ───
+// ┌──────────────────┬────────────────┬─────────────────────────────┐
+// │  功能             │ 引脚            │ 目标                         │
+// ├──────────────────┼────────────────┼─────────────────────────────┤
+// │ Debug (UART0)    │ GPIO1/3        │ USB-Serial (CH340/CP2102)   │
+// │ VIS RX (SW Ser)  │ GPIO4          │ ← OpenMV P0 HW UART(3)      │
+// │ STM32 TX (UART2) │ GPIO17         │ → STM32 PB11 (USART3 RX)    │
+// │ STM32 RX (UART2) │ GPIO16         │ ← STM32 PB10 (USART3 TX)    │
+// └──────────────────┴────────────────┴─────────────────────────────┘
 
-// ─── UART1: ELRS/CRSF 遥控接收机 ───
-constexpr uint8_t PIN_CRSF_RX       = 15;   // ← ELRS RX CRSF TX
-constexpr uint8_t PIN_CRSF_TX       = 4;    // → ELRS RX CRSF RX (双向遥测)
-constexpr uint32_t CRSF_BAUD        = 420000;
+// ─── 板载 LED ───
+constexpr uint8_t PIN_LED       = 2;    // GPIO2 (ESP32 DevKit V1 板载蓝色 LED, active-HIGH, 已验证 2026-06-03)
+// 行为: 常亮=运行中等待VIS, 闪烁=VIS帧接收中
 
-// ─── UART2: STM32 双向通信 (MotorCmd 下行 + 遥测上行) ───
-// Phase 0: VIS 经 ESP8266 WiFi 桥接, Serial2 专用于 STM32 通信
-constexpr uint8_t PIN_STM32_TX      = 17;   // → STM32 USART3 RX (PB11)
-constexpr uint8_t PIN_STM32_RX      = 16;   // ← STM32 USART3 TX (PB10)
-constexpr uint32_t STM32_UART_BAUD  = 115200;
+// ─── VIS 接收 (SoftwareSerial) ───
+constexpr uint8_t PIN_VIS_RX    = 4;    // ← OpenMV P0 HW UART(3) @ 4800 baud
 
-// ─── CRSF 遥控通道映射 (Jumper T14 EdgeTX Mixer) ───
-// CH1: 右摇杆 X → Steering (转向)
-// CH2: 备用 (摄像头俯仰预留)
-// CH3: 左摇杆 Y → Throttle (油门, 中位=0)
-// CH4: 备用
-// CH5: SWA 三档 → Mode: Manual / Auto-Follow / E-Stop
-// CH6: POT1 旋钮 → Max Speed 限速
-constexpr uint8_t  CRSF_CH_STEERING    = 1;
-constexpr uint8_t  CRSF_CH_THROTTLE    = 3;
-constexpr uint8_t  CRSF_CH_MODE_SWITCH = 5;
-constexpr uint8_t  CRSF_CH_SPEED_LIMIT = 6;
+// ─── STM32 通信 (UART2 / Serial2) ───
+constexpr uint8_t PIN_STM32_TX  = 17;   // → STM32 PB11
+constexpr uint8_t PIN_STM32_RX  = 16;   // ← STM32 PB10
+constexpr uint32_t STM32_BAUD   = 115200;
 
-// CRSF 通道值参数
-// 原始范围: 172~1811 (11-bit), 中位 ~992
-// 归一化后 → -1.0 ~ 0 ~ 1.0 (中位=0)
-constexpr uint16_t CRSF_RAW_MIN    = 172;
-constexpr uint16_t CRSF_RAW_MAX    = 1811;
-constexpr uint16_t CRSF_RAW_MID    = 992;
-constexpr float    CRSF_DEADBAND   = 0.03f;  // 摇杆中位 ±3% 视为 STOP
-
-// ─── CRSF 链路安全参数 ───
-constexpr uint32_t CRSF_FRAME_TIMEOUT_MS = 100;  // CRSF 帧中断超时 → STOP
-constexpr uint8_t  CRSF_LQ_MIN           = 50;   // LQ < 50% → Dashboard 警告
-
-// ─── STM32 通信参数 ───
-constexpr uint32_t STM32_CMD_INTERVAL_MS  = 50;   // MotorCmd 发送间隔
-constexpr uint32_t STM32_TELEM_TIMEOUT_MS = 300;  // 遥测超时 → Dashboard 报警
-
-// ─── 命令超时 (ms): ESP32 → STM32 无命令 → STM32 自动 STOP ───
-constexpr unsigned long COMMAND_TIMEOUT_MS = 500;
-
-// ─── WiFi AP 配置 ───
+// ─── WiFi AP ───
 constexpr char WIFI_SSID[] = "Tracked Robot";
 constexpr char WIFI_PASS[] = "12345678";
 
-// ─── FreeRTOS task stack size ───
-constexpr uint32_t TASK_STACK_SIZE = 4096;
-
-// ─── 视觉数据超时 (ms): 超过此时间无 VIS 帧 → 视为失效 ───
-constexpr unsigned long VISION_TIMEOUT_MS = 700;
-
-// ─── 距离保持阈值 (distScore 0.0-1.0) ───
-// distScore 由 OpenMV 端视觉特征 (area_ratio, feetY) + VL53L1X ToF 距离 (mm) 融合计算
-// ESP32 FollowLogic 仅使用最终 distScore 做决策，不直接感知 ToF 原始数据
-// 阈值在履带车上需重新标定（Phase 6.4）
-constexpr float DIST_FAR         = 0.25f;  // < this → 全速追赶
-constexpr float DIST_APPROACHING = 0.45f;  // < this → 中速跟近
-constexpr float DIST_NEAR_START  = 0.60f;  // > this → 开始后退
-constexpr float DIST_NEAR        = 0.80f;  // > this → 全速后退
-constexpr float DIST_HYSTERESIS  = 0.05f;  // 滞后带（防振荡）
-constexpr int   DIST_STABLE_FRAMES = 3;    // 状态切换需维持帧数
-
-// ─── HC6060A 混控款电调 PWM 参数 ───
-// 白线=油门, 黄线=转向, 电调内部处理差速混控
-// 50Hz 标准舵机 PWM: 1000-2000μs, 中位 1500μs
+// ─── 双路无刷电调 PWM 参数 ───
+// 50Hz 舵机 PWM: 1000-2000μs, 中位 1500μs
+// MotorCmd {throttle, steering} → STM32 坦克混控 → 左/右独立 PWM
 constexpr uint16_t PWM_NEUTRAL         = 1500;
 constexpr uint16_t PWM_MIN             = 1000;
 constexpr uint16_t PWM_MAX             = 2000;
-constexpr uint16_t MAX_THROTTLE_OFFSET = 400;   // 最大油门偏中位 (1500±400 = 1100~1900μs)
-constexpr uint16_t MAX_STEER_OFFSET    = 300;   // 最大转向偏中位 (1500±300 = 1200~1800μs)
-constexpr uint16_t THROTTLE_DEADBAND   = 20;    // 油门中位死区 (±20μs, 防止漂移)
+constexpr uint16_t MAX_THROTTLE_OFFSET = 400;
+constexpr uint16_t MAX_STEER_OFFSET    = 300;
+constexpr uint16_t THROTTLE_DEADBAND   = 20;
+constexpr float    TURN_KP             = 2.0f;
+constexpr int      CX_MIN_OFFSET       = 15;
 
-// ─── 履带差速转向参数 ───
-constexpr float TURN_KP          = 2.0f;   // 转向 P 增益 (cx 偏差像素 → steering μs)
-constexpr int   CX_MIN_OFFSET    = 15;     // cx 偏差绝对值 < this → 不转向 (中心死区)
+// ─── 时序参数 ───
+constexpr uint32_t STM32_CMD_INTERVAL_MS = 50;
+constexpr uint32_t CMD_TIMEOUT_MS        = 500;
+constexpr uint32_t VISION_TIMEOUT_MS     = 700;
+constexpr uint32_t ESC_INIT_DELAY_MS     = 3000;
 
-// ─── MotorCmd: FreeRTOS queue 元素 (4 字节, 零 heap 分配) ───
-// HC6060A 混控款: throttle/steering 直接对应白线/黄线 PWM 脉宽 (μs)
+// ─── MotorCmd ───
+// throttle/steering 发送到 STM32 后由坦克混控转换为左/右电机 PWM
 struct MotorCmd {
-    uint16_t throttle;  // 白线油门 (1000-2000μs, 1500=停止)
-    uint16_t steering;  // 黄线转向 (1000-2000μs, 1500=直行)
+    uint16_t throttle;  // 油门 (1000-2000μs, 1500=停止)
+    uint16_t steering;  // 转向 (1000-2000μs, 1500=直行)
 };
