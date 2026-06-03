@@ -16,7 +16,7 @@
 | **ESP8266 FollowLogic** | ✅ 代码就绪 | 移植自 ESP32, 连续 throttle+steering 输出 |
 | **ESP8266 VIS 接收** | ✅ 已验证 | D5(GPIO14) SoftwareSerial @ 4800 ← N6, 97%+ 成功率 |
 | **ESP8266 WiFi Dashboard** | ✅ 已验证 | AP "Tracked Robot", HTTP :80, `/status` JSON |
-| **OpenMV N6** | ✅ 已验证 | YOLOv8n NPU 45FPS, VL53L1X ToF, VIS P0 HW UART(3) @ 4800 |
+| **OpenMV N6** | ✅ 已验证 | YOLOv8n NPU 45FPS, VL53L1X ToF (I2C2 P4/P5), VIS P2 UART4 @ 4800 (STM32N657) |
 | **ESP32** | ✅ 重新启用 | 精简固件就绪 (2026-06-03)。4文件单线程架构，功能匹配 ESP8266。烧录需 `--no-stub`。GPIO2 LED 正常。详见 `ESP32_Solo/DEPRECATED.md` |
 | **HC6060A 有刷电调** | ❌ 已废弃 | 实车使用三相无刷电机, 替换为双路独立无刷电调 |
 | **ZTW Seal G2 无刷电调** | ✅ 已解决 | 核心发现: 该电调中位在~1275μs而非1500μs。STM32在1500μs时被电调判定为前进, FPV接收机因脉宽波形差异恰好匹配。修改PWM_NEUTRAL=1275后正常 |
@@ -41,7 +41,7 @@
 | 2026-06-02 | **STM32 PWM 输出修复** | `escInit()` CRH 寄存器位偏移错误修正 (PB12/13→PB8/9); 摇杆满幅映射 |
 | 2026-06-01 | **ESP8266 ↔ STM32 USART3 通信打通** | 恢复 STM32 SerialESP 接收, CRC8 校验, PS2/ESP 通用超时 |
 | 2026-06-01 | **N6 VIS: bit-bang → P0 硬件 UART(3)** | P0=USART3 TX, 省 CPU 资源, 更可靠 |
-| 2026-05-31 | **HC6060A 有刷电调 → 双路独立无刷电调** | 实车检测发现原平台使用两台三相无刷电机驱动左右履带 |
+| 2026-06-03 | **N6 VIS: P0→P2 (UART3→UART4)** | STM32N657 官方引脚表: P0 无 UART, P2=UART4 TX |
 | 2026-05-28 | ESP32 → ESP8266 | NodeMCU V3 替代 ESP32 全部 L2 功能 |
 
 > **当前控制方案**: STM32 TIM3 输出两路 50Hz PWM (PB0=左电机 H8, PB1=右电机 H9), 坦克混控。PWM: 650-1275-1900μs。
@@ -95,7 +95,7 @@ YOLO检测                       VIS接收 (SoftwareSerial)       PS2 轮询 (50
   ▼                              │                             ▼
 VIS帧组装                        ▼                            坦克混控 (tank-mix)
   │                             UART0 swapped → STM32           │   left = thr + (st-PWM_NEUTRAL)
-P0 HW UART@4800 → ESP8266      6-byte binary + CRC8             │   right = thr - (st-PWM_NEUTRAL)
+P2 UART4@4800 → ESP32/ESP8266      6-byte binary + CRC8             │   right = thr - (st-PWM_NEUTRAL)
                                                                  ▼
                                                                TIM3 PWM 输出
                                                                  │   PB0=左电机 ESC

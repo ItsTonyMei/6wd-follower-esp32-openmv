@@ -1,11 +1,14 @@
 # ============================================================================
-# 履带车视觉跟随系统 — OpenMV L1 感知层 (Phase 0 验证通过)
+# 履带车视觉跟随系统 — OpenMV L1 感知层
 # N6: YOLOv8n NPU 45FPS + VL53L1X ToF (I2C2, P4/P5)
-# VIS 输出: P0 软件 UART @ 4800 baud → ESP8266 Bridge D5 (GPIO14)
+# VIS 输出: P2 UART4 TX @ 4800 baud → ESP32 GPIO4 (SoftwareSerial)
+# P4/P5 = VL53L1X ToF (I2C2), P0 = SPI2 only (无 UART)
+# LED: 红=错误, 绿=有人+ToF有效, 蓝=扫描中
 # ============================================================================
 
 import gc, time, math, os
 import ml
+from pyb import LED as _LED
 
 # ============================================================================
 # Board detection — N6 用 csi, H7 Plus 用 sensor
@@ -155,8 +158,10 @@ if person_idx is None:
 VIS_BAUD      = 4800
 VIS_INTERVAL_MS = 200   # 每 200ms 发送一次 VIS 帧
 
-from machine import UART
-vis_uart = UART(3, VIS_BAUD)  # P0 = USART3 TX (默认), 硬件串口
+# P2 = UART4 TX (STM32N657 官方引脚映射, P4/P5 被 ToF I2C2 占用)
+from machine import UART, Pin as _Pin
+_p2 = _Pin("P2", mode=_Pin.ALT, alt=_Pin.AF8_UART4)
+vis_uart = UART(4, VIS_BAUD)
 
 TOF_ENABLED = False
 try:
@@ -284,6 +289,44 @@ def draw_debug(img, fps, person_rect, score, dist_category, dist_score):
         img.draw_string((3, 13), "No person", color=(255,100,100), scale=1)
 
 # ============================================================================
+# LED 状态指示 (参考 2dof-gimbal 项目)
+# N6 RGB LED: _LED(1)=红, _LED(2)=绿, _LED(3)=蓝
+# ============================================================================
+
+_last_led_state = -1   # 防重复写入
+_led_counter    = 0
+
+def update_led(has_person, tof_valid, error=False):
+    global _last_led_state, _led_counter
+    _led_counter += 1
+
+    if error:
+        new_state = 1       # 红 = 错误
+    elif has_person:
+        if tof_valid:
+            new_state = 2   # 绿 = 有人 + ToF 有效
+        else:
+            new_state = 4   # 绿闪烁 = 有人 + ToF 无效
+    else:
+        new_state = 3       # 蓝 = 扫描中 (无目标)
+
+    if new_state != _last_led_state:
+        _LED(1).off(); _LED(2).off(); _LED(3).off()
+        if new_state == 1:
+            _LED(1).on()
+        elif new_state == 2:
+            _LED(2).on()
+        elif new_state == 3:
+            _LED(3).on()
+        elif new_state == 4:
+            if _led_counter % 2:
+                _LED(2).on()
+        _last_led_state = new_state
+    elif new_state == 4:    # ToF 丢失时绿闪
+        if _led_counter % 8 == 0:
+            _LED(2).toggle()
+
+# ============================================================================
 # Main loop
 # ============================================================================
 
@@ -359,7 +402,12 @@ while True:
     draw_debug(img, clock.fps(), person_rect, score if detections else 0,
                dist_category, dist_score)
 
-    # VIS output (scale coords to 192x192 for ESP8266 FollowLogic compatibility)
+    # LED 状态更新 (每 2 帧一次, 节省 I2C)
+    tof_ok = TOF_ENABLED and TOF_MIN_VALID <= tof_distance <= TOF_MAX_VALID
+    if frame_counter % 2 == 0:
+        update_led(person_rect is not None, tof_ok)
+
+    # VIS output (scale coords to 192x192 for ESP32 FollowLogic compatibility)
     if time.ticks_diff(time.ticks_ms(), last_vis_ms) >= VIS_INTERVAL_MS:
         last_vis_ms = now_ms
         if person_rect:

@@ -333,8 +333,8 @@ void loop() {
 
     // ─── 1. VIS 接收 (SoftwareSerial) ───
     int c;
+    bool frameReceived = false;
     while ((c = visSerial.read()) >= 0 && c < 256) {
-        digitalWrite(PIN_LED, LOW);
         if (c == '\n' || c == '\r') {
             if (visLen > 0) {
                 visLine[visLen] = '\0';
@@ -342,15 +342,34 @@ void loop() {
                 if (parseVisFrame(visLine, visLen)) okFrames++;
                 else failFrames++;
                 visLen = 0;
+                frameReceived = true;
             }
         } else if (visLen < (int)sizeof(visLine) - 1) {
             visLine[visLen++] = (char)c;
         }
     }
+    if (frameReceived) {
+        digitalWrite(PIN_LED, !digitalRead(PIN_LED));  // 每帧翻转 LED
+    }
 
-    // ─── 2. FollowLogic → MotorCmd (每 50ms) ───
-    static unsigned long lastCmdMs = 0;
+    // ─── 2. 调试: 每 5 秒打印 VIS 接收统计 ───
+    static unsigned long lastDiagMs = 0;
+    static unsigned long lastTotalFrames = 0;
     unsigned long now = millis();
+    if (now - lastDiagMs >= 5000) {
+        lastDiagMs = now;
+        unsigned long delta = totalFrames - lastTotalFrames;
+        Serial.print("[VIS diag] total="); Serial.print(totalFrames);
+        Serial.print(" ok="); Serial.print(okFrames);
+        Serial.print(" fail="); Serial.print(failFrames);
+        Serial.print(" delta_5s="); Serial.print(delta);
+        Serial.print(" uptime="); Serial.print(now / 1000);
+        Serial.println("s");
+        lastTotalFrames = totalFrames;
+    }
+
+    // ─── 3. FollowLogic → MotorCmd (每 50ms) ───
+    static unsigned long lastCmdMs = 0;
     if (now - lastCmdMs >= STM32_CMD_INTERVAL_MS) {
         lastCmdMs = now;
         MotorCmd mc;
