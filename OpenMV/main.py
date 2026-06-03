@@ -46,7 +46,23 @@ SENSOR_SKIP_FRAMES  = 0 if IS_N6 else 2
 
 DETECTION_THRESHOLD  = 0.4
 
-# ---- 距离估计 ----
+# ---- 距离估计: ToF 主信号 + 视觉备用 + EMA 平滑 ----
+# VL53L1X ToF 有效范围
+TOF_MIN_VALID = 40     # mm, < this → 无效 (遮挡/太近)
+TOF_MAX_VALID = 4000   # mm, > this → 无效 (超量程, 退回视觉)
+
+# ToF mm → distScore 分段线性映射
+# distScore 含义 (与 ESP32 FollowLogic 对齐):
+#   >= 0.85 → STOP,  0.65-0.85 → SLOW,  0.30-0.65 → MID,  < 0.30 → FAR
+TOF_STOP_MM   = 500    # < this → distScore = 1.0 (STOP)
+TOF_NEAR_MM   = 1000   # STOP → SLOW 过渡终点
+TOF_MID_MM    = 2000   # SLOW → FAR 过渡终点 (~1.5m 映射到 ~0.55)
+TOF_FAR_MM    = 4000   # FAR → 全速追赶
+
+# EMA 平滑: alpha 越大响应越快，越小越平滑 (0.0-1.0)
+TOF_SMOOTH_ALPHA = 0.3
+
+# 视觉备用保留原有阈值 (ToF 无效时启用)
 AREA_VERY_CLOSE = 0.50
 AREA_CLOSE      = 0.30
 AREA_FAR        = 0.10
@@ -155,12 +171,35 @@ except Exception as e:
     print("VL53L1X: N/A (%s)" % e)
 
 # ============================================================================
-# Distance estimation (same logic for both N6 & H7)
+# Distance estimation: ToF fusion + visual fallback + EMA smoothing
 # ============================================================================
 
-def estimate_distance(w, h, feet_y, frame_w, frame_h):
+_smooth_score = -1.0   # EMA 平滑后的全局 distScore (-1 = 未初始化)
+
+def tof_to_dist_score(tof_mm):
+    """ToF 距离 (mm) → distScore (0.0-1.0), 分段线性映射.
+       返回 -1 表示 ToF 无效."""
+    if tof_mm < TOF_MIN_VALID or tof_mm > TOF_MAX_VALID:
+        return -1
+
+    if tof_mm < TOF_STOP_MM:
+        return 1.0
+    if tof_mm < TOF_NEAR_MM:
+        t = (tof_mm - TOF_STOP_MM) / (TOF_NEAR_MM - TOF_STOP_MM)
+        return 1.0 - 0.15 * t           # 1.0 → 0.85
+    if tof_mm < TOF_MID_MM:
+        t = (tof_mm - TOF_NEAR_MM) / (TOF_MID_MM - TOF_NEAR_MM)
+        return 0.85 - 0.55 * t          # 0.85 → 0.30
+    if tof_mm < TOF_FAR_MM:
+        t = (tof_mm - TOF_MID_MM) / (TOF_FAR_MM - TOF_MID_MM)
+        return 0.30 - 0.25 * t          # 0.30 → 0.05
+    return 0.05
+
+def vision_dist_score(w, h, feet_y, frame_w, frame_h):
+    """纯视觉距离估计 (ToF 无效时备用).
+       返回 (category_str, score, area_ratio)."""
     area_ratio = (w * h) / (frame_w * frame_h)
-    top_y = feet_y - h  # approximate
+    top_y = feet_y - h
 
     if area_ratio > AREA_VERY_CLOSE:
         return ("STOP", 1.0, area_ratio)
@@ -170,19 +209,54 @@ def estimate_distance(w, h, feet_y, frame_w, frame_h):
     if area_ratio > AREA_CLOSE:
         area_score = min(1.0, area_ratio / AREA_VERY_CLOSE)
         feet_score = min(1.0, feet_y / frame_h)
-        return ("CLOSE_SLOW", area_score * WEIGHT_CLOSE_AREA + feet_score * WEIGHT_CLOSE_FEETY, area_ratio)
+        return ("CLOSE_SLOW",
+                area_score * WEIGHT_CLOSE_AREA + feet_score * WEIGHT_CLOSE_FEETY,
+                area_ratio)
 
     if area_ratio > AREA_FAR:
         feet_score = min(1.0, feet_y / frame_h)
         area_score = area_ratio / AREA_CLOSE
-        return ("MEDIUM", feet_score * WEIGHT_MEDIUM_FEETY + area_score * WEIGHT_MEDIUM_AREA, area_ratio)
+        return ("MEDIUM",
+                feet_score * WEIGHT_MEDIUM_FEETY + area_score * WEIGHT_MEDIUM_AREA,
+                area_ratio)
 
     feet_score = max(0.0, min(1.0, feet_y / FEETY_FAR)) if feet_y < FEETY_FAR else 1.0
     area_score = area_ratio / AREA_FAR
     score = feet_score * WEIGHT_FAR_FEETY + area_score * WEIGHT_FAR_AREA
-    if score >= 0.65: return ("CLOSE_SLOW", score, area_ratio)
-    elif score >= 0.30: return ("MEDIUM", score, area_ratio)
-    else: return ("FULL_SPEED", score, area_ratio)
+    if score >= 0.65:
+        return ("CLOSE_SLOW", score, area_ratio)
+    elif score >= 0.30:
+        return ("MEDIUM", score, area_ratio)
+    else:
+        return ("FULL_SPEED", score, area_ratio)
+
+def fused_distance(tof_mm, w, h, feet_y, frame_w, frame_h):
+    """融合距离估计: ToF 主信号 + EMA 平滑 + 视觉备用.
+       返回 (category_str, dist_score)."""
+    global _smooth_score
+
+    raw = tof_to_dist_score(tof_mm)
+
+    if raw >= 0:  # ToF 有效
+        if _smooth_score < 0:
+            _smooth_score = raw
+        else:
+            _smooth_score = TOF_SMOOTH_ALPHA * raw + (1 - TOF_SMOOTH_ALPHA) * _smooth_score
+        score = _smooth_score
+    else:         # ToF 无效, 退回视觉
+        _, score, _ = vision_dist_score(w, h, feet_y, frame_w, frame_h)
+        _smooth_score = -1  # 重置平滑, 下次 ToF 有效时重新初始化
+
+    # distScore → category
+    if score >= 0.85:
+        cat = "STOP"
+    elif score >= 0.65:
+        cat = "CLOSE_SLOW"
+    elif score >= 0.30:
+        cat = "MEDIUM"
+    else:
+        cat = "FULL_SPEED"
+    return (cat, score)
 
 # ============================================================================
 # Debug drawing (simplified for speed)
@@ -272,8 +346,8 @@ while True:
         target_h  = int(h)
         target_feet_y = int(y + h)
 
-        dist_category, dist_score, _ = estimate_distance(
-            target_w, target_h, target_feet_y, img_w, img_h)
+        dist_category, dist_score = fused_distance(
+            tof_distance, target_w, target_h, target_feet_y, img_w, img_h)
 
         person_rect = (x, y, w, h)
         no_person_count = 0
