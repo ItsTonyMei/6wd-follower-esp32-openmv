@@ -25,6 +25,9 @@ Thumbs.db
 # PlatformIO build artifacts
 .pio/
 
+# Arduino build artifacts
+build/
+
 # Claude Code (internal plugin data)
 .claude/
 
