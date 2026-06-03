@@ -155,8 +155,8 @@ if person_idx is None:
 VIS_BAUD      = 4800
 VIS_INTERVAL_MS = 200   # 每 200ms 发送一次 VIS 帧
 
-from machine import UART, Pin as _Pin
-vis_uart = UART(3, VIS_BAUD, tx=_Pin('P0'))  # P0 = USART3 TX, 硬件串口
+from machine import UART
+vis_uart = UART(3, VIS_BAUD)  # P0 = USART3 TX (默认), 硬件串口
 
 TOF_ENABLED = False
 try:
