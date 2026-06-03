@@ -58,12 +58,12 @@ VIS_INTERVAL_MS = 200                    # VIS 帧发送间隔 (ms)
 # ─── 距离估计: ToF 主信号 + 视觉备用 + EMA 平滑 ───
 TOF_MIN_VALID = 40                       # mm, < this → 无效 (遮挡/太近)
 TOF_MAX_VALID = 4000                     # mm, > this → 无效 (超量程, 退回视觉)
-# ToF mm → distScore 分段线性映射 (与 ESP32 FollowLogic 阈值对齐: >=0.85 STOP, >=0.65 SLOW, >=0.30 MID)
-TOF_STOP_MM   = 500                      # < this → distScore = 1.0
-TOF_NEAR_MM   = 1000                     # STOP → SLOW 过渡
-TOF_MID_MM    = 2000                     # SLOW → FAR 过渡 (~1.5m → 0.55)
-TOF_FAR_MM    = 4000                     # FAR → 全速追赶
+# ToF mm → distScore 双向映射 (0.0=远/全速前进, 0.5=1.5m/停止, 1.0=近/全速后退)
+TOF_STOP_MM   = 500                      # < this → distScore = 1.0 (极限逼近)
+TOF_TARGET_MM = 1500                     # = this → distScore = 0.5 (目标跟随距离, 停止)
+TOF_FAR_MM    = 4000                     # > this → distScore ≈ 0.0 (全速前进追赶)
 TOF_SMOOTH_ALPHA = 0.3                   # EMA 平滑系数 (0-1, 越小越平滑)
+# 视觉备用参数 (ToF 无效时启用, 暂保留单向前进逻辑)
 # 视觉备用参数 (ToF 无效时启用)
 AREA_VERY_CLOSE = 0.50
 AREA_CLOSE      = 0.30
@@ -180,23 +180,23 @@ except Exception as e:
 _smooth_score = -1.0   # EMA 平滑后的全局 distScore (-1 = 未初始化)
 
 def tof_to_dist_score(tof_mm):
-    """ToF 距离 (mm) → distScore (0.0-1.0), 分段线性映射.
+    """ToF 距离 (mm) → distScore (0.0-1.0), 双向分段线性映射.
+       0.5 = 目标距离 1.5m (停止), <0.5 = 远/前进, >0.5 = 近/后退.
        返回 -1 表示 ToF 无效."""
     if tof_mm < TOF_MIN_VALID or tof_mm > TOF_MAX_VALID:
         return -1
 
     if tof_mm < TOF_STOP_MM:
-        return 1.0
-    if tof_mm < TOF_NEAR_MM:
-        t = (tof_mm - TOF_STOP_MM) / (TOF_NEAR_MM - TOF_STOP_MM)
-        return 1.0 - 0.15 * t           # 1.0 → 0.85
-    if tof_mm < TOF_MID_MM:
-        t = (tof_mm - TOF_NEAR_MM) / (TOF_MID_MM - TOF_NEAR_MM)
-        return 0.85 - 0.55 * t          # 0.85 → 0.30
+        return 1.0                       # < 0.5m → 极限逼近
+    if tof_mm < TOF_TARGET_MM:
+        # 500→1500mm: 1.0 → 0.5
+        t = (tof_mm - TOF_STOP_MM) / (TOF_TARGET_MM - TOF_STOP_MM)
+        return 1.0 - 0.5 * t
     if tof_mm < TOF_FAR_MM:
-        t = (tof_mm - TOF_MID_MM) / (TOF_FAR_MM - TOF_MID_MM)
-        return 0.30 - 0.25 * t          # 0.30 → 0.05
-    return 0.05
+        # 1500→4000mm: 0.5 → 0.0
+        t = (tof_mm - TOF_TARGET_MM) / (TOF_FAR_MM - TOF_TARGET_MM)
+        return 0.5 - 0.5 * t
+    return 0.0
 
 def vision_dist_score(w, h, feet_y, frame_w, frame_h):
     """纯视觉距离估计 (ToF 无效时备用).
@@ -250,15 +250,19 @@ def fused_distance(tof_mm, w, h, feet_y, frame_w, frame_h):
         _, score, _ = vision_dist_score(w, h, feet_y, frame_w, frame_h)
         _smooth_score = -1  # 重置平滑, 下次 ToF 有效时重新初始化
 
-    # distScore → category
-    if score >= 0.85:
-        cat = "STOP"
+    # distScore → category (双向: 0.5=目标停止, >0.5=近/后退, <0.5=远/前进)
+    if score >= 0.90:
+        cat = "STOP"          # 极限逼近 → 强制停止
     elif score >= 0.65:
-        cat = "CLOSE_SLOW"
+        cat = "REV"           # 太近 → 后退
+    elif score >= 0.55:
+        cat = "SLOW_REV"      # 稍近 → 缓慢后退
+    elif score >= 0.45:
+        cat = "HOLD"          # 目标区间 → 保持
     elif score >= 0.30:
-        cat = "MEDIUM"
+        cat = "SLOW_FWD"      # 稍远 → 缓慢前进
     else:
-        cat = "FULL_SPEED"
+        cat = "FWD"           # 远 → 前进
     return (cat, score)
 
 # ============================================================================
@@ -276,10 +280,12 @@ def draw_debug(img, fps, person_rect, score, dist_category, dist_score):
     # Detection
     if person_rect:
         x, y, w, h = person_rect
-        if dist_category == "STOP": c = (255,0,0)
-        elif dist_category == "CLOSE_SLOW": c = (255,200,0)
-        elif dist_category == "MEDIUM": c = (0,200,255)
-        else: c = (0,255,0)
+        if dist_category == "STOP":      c = (255,0,0)     # 红
+        elif dist_category == "REV":      c = (255,100,0)   # 橙
+        elif dist_category == "SLOW_REV": c = (255,200,0)   # 黄
+        elif dist_category == "HOLD":     c = (0,200,255)   # 青
+        elif dist_category == "SLOW_FWD": c = (0,255,0)     # 绿
+        else:                             c = (0,255,0)     # 绿 (FWD)
         img.draw_rectangle((x, y, w, h), color=c, thickness=2)
         img.draw_string((3, 13), "%s(%.2f)" % (dist_category, dist_score),
                         color=(255,200,0), scale=1)

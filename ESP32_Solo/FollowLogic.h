@@ -19,10 +19,11 @@ public:
     // distScore > 0: 使用多特征融合模式; distScore == 0: 降级为 feetY 模式
     MotorCmd update(bool hasPerson, int cx, int feetY, float distScore);
 
-    // ─── distScore 阈值 (多特征融合, 0.0-1.0, 越大越近) ───
-    static constexpr float DIST_SCORE_STOP = 0.85f;  // 非常近 → STOP
-    static constexpr float DIST_SCORE_SLOW = 0.65f;  // 比较近 → 慢速过渡
-    static constexpr float DIST_SCORE_FAR  = 0.30f;  // 比较远 → 可全速
+    // ─── distScore 阈值 (双向: 0.0=远/前进, 0.5=1.5m/停止, 1.0=近/后退) ───
+    static constexpr float SCORE_NEUTRAL     = 0.50f;  // 目标距离 (1.5m), 停止
+    static constexpr float SCORE_DEADBAND    = 0.04f;  // 停止死区 (±2% ≈ ±6cm @1.5m)
+    static constexpr float SCORE_STEER_LOCK  = 0.70f;  // > this → 锁转向 (太近防撞)
+    static constexpr float SCORE_HARD_STOP   = 0.90f;  // > this → 强制停止 (极限逼近)
 
     // ─── feetY 阈值 (legacy fallback, 192×192 窗口) ───
     static constexpr int FEETY_STOP  = 160;  // 太近 → STOP

@@ -14,25 +14,28 @@ MotorCmd FollowLogic::update(bool hasPerson, int cx, int feetY, float distScore)
 }
 
 uint16_t FollowLogic::throttleFromScore(float score) {
-    if (score >= DIST_SCORE_STOP) {
+    // ─── 双向油门: score=0.5=停止, <0.5=前进, >0.5=后退 ───
+    // 强制停止: 极限逼近 (>0.9)
+    if (score >= SCORE_HARD_STOP) {
         return PWM_NEUTRAL;
     }
-    if (score < DIST_SCORE_FAR) {
-        return PWM_NEUTRAL + MAX_THROTTLE_OFFSET;
+
+    float centered = SCORE_NEUTRAL - score;  // 远(+)=前进, 近(-)=后退
+    float range = 0.5f - SCORE_DEADBAND;     // 有效范围 (0.46)
+
+    if (abs(centered) <= SCORE_DEADBAND) {
+        return PWM_NEUTRAL;                   // 死区 → 停止
     }
 
-    // 在 FAR → SLOW 区间线性插值
-    if (score < DIST_SCORE_SLOW) {
-        float t = (score - DIST_SCORE_FAR) / (DIST_SCORE_SLOW - DIST_SCORE_FAR);
-        uint16_t offset = MAX_THROTTLE_OFFSET -
-            (uint16_t)(t * (MAX_THROTTLE_OFFSET - 100));
-        return PWM_NEUTRAL + offset;
-    }
+    float scale = (abs(centered) - SCORE_DEADBAND) / range;
+    if (scale > 1.0f) scale = 1.0f;
 
-    // 在 SLOW → STOP 区间线性衰减到 0
-    float t = (score - DIST_SCORE_SLOW) / (DIST_SCORE_STOP - DIST_SCORE_SLOW);
-    uint16_t offset = (uint16_t)(100.0f * (1.0f - t));
-    return PWM_NEUTRAL + (offset > THROTTLE_DEADBAND ? offset : 0);
+    int offset = (int)(scale * MAX_THROTTLE_OFFSET);
+    if (centered > 0.0f) {
+        return PWM_NEUTRAL + offset;          // 前进
+    } else {
+        return PWM_NEUTRAL - offset;          // 后退
+    }
 }
 
 uint16_t FollowLogic::steeringFromOffset(int offset) {
@@ -52,8 +55,8 @@ MotorCmd FollowLogic::handleDistScore(int cx, float distScore) {
     int offset = cx - FRAME_CENTER;
     uint16_t steering = steeringFromOffset(offset);
 
-    // 距离很近时抑制转向，防止撞到人
-    if (distScore >= DIST_SCORE_SLOW) {
+    // 距离很近时锁转向，防止擦撞
+    if (distScore >= SCORE_STEER_LOCK) {
         steering = PWM_NEUTRAL;
     }
 
@@ -64,19 +67,19 @@ MotorCmd FollowLogic::handleFeetY(int cx, int feetY) {
     float pseudoScore;
 
     if (feetY >= FEETY_STOP) {
-        pseudoScore = 0.90f;
+        pseudoScore = SCORE_HARD_STOP;               // 太近 → 0.90
     } else if (feetY >= FEETY_SLOW) {
-        // FEETY_SLOW..FEETY_STOP → SLOW..STOP
-        pseudoScore = DIST_SCORE_SLOW
-            + (DIST_SCORE_STOP - DIST_SCORE_SLOW)
+        // feetY: 145→160 → score: 0.70→0.90
+        pseudoScore = SCORE_STEER_LOCK
+            + (SCORE_HARD_STOP - SCORE_STEER_LOCK)
             * (float)(feetY - FEETY_SLOW) / (float)(FEETY_STOP - FEETY_SLOW);
     } else if (feetY >= FEETY_FAR) {
-        // FEETY_FAR..FEETY_SLOW → FAR..SLOW
-        pseudoScore = DIST_SCORE_FAR
-            + (DIST_SCORE_SLOW - DIST_SCORE_FAR)
+        // feetY: 80→145 → score: 0.30→0.70
+        pseudoScore = 0.30f
+            + (SCORE_STEER_LOCK - 0.30f)
             * (float)(feetY - FEETY_FAR) / (float)(FEETY_SLOW - FEETY_FAR);
     } else {
-        pseudoScore = DIST_SCORE_FAR - 0.05f;
+        pseudoScore = 0.25f;
     }
 
     return handleDistScore(cx, pseudoScore);
