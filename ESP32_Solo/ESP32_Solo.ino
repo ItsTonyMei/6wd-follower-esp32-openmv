@@ -48,6 +48,7 @@ struct {
 
 // ─── VIS 帧统计 ───
 unsigned long totalFrames = 0, okFrames = 0, failFrames = 0;
+unsigned long reqCount = 0;  // HTTP 请求计数
 
 // ─── CRC8 (poly 0x07, 与 STM32 一致) ───
 static uint8_t crc8(const uint8_t *data, size_t len) {
@@ -126,6 +127,7 @@ void handleStatus() {
         car.throttle, car.steering, car.ts,
         now, ESP.getFreeHeap(), WiFi.softAPgetStationNum(),
         totalFrames, okFrames, failFrames);
+    Serial.print("[HTTP] /status req #"); Serial.println(++reqCount);
     server.send(200, "application/json", json);
 }
 
@@ -134,7 +136,7 @@ void handleRoot() {
     String html = F(R"raw(
 <!DOCTYPE html><html lang="zh"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Rover ESP32</title>
+<title>Tracked Robot</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,sans-serif;background:#0f1117;color:#c9d1d9;max-width:440px;margin:0 auto;padding:10px 10px 40px}
@@ -149,9 +151,8 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
 .col{flex:1}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-.bar-wrap{height:10px;background:#21262d;border-radius:5px;overflow:hidden;margin:4px 0;position:relative}
+.bar-wrap{height:10px;background:#21262d;border-radius:5px;overflow:hidden;margin:4px 0}
 .bar-fill{height:100%;border-radius:5px;transition:width .3s,background .3s}
-.bar-target{position:absolute;top:0;left:50%;width:3px;height:100%;background:#fff;opacity:.6;z-index:2;border-radius:1px}
 .r{background:#da3633}.y{background:#d2991d}.g{background:#238636}.b{background:#58a6ff}
 .footer{text-align:center;font-size:10px;color:#484f58;margin-top:10px}
 </style></head><body>
@@ -183,8 +184,8 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
     <div><div class="lbl">数据时效</div><div class="val" id="vis-age" style="font-size:13px">--</div></div>
   </div>
   <div style="margin-top:8px"><div class="lbl">距离估计</div>
-    <div class="bar-wrap"><div class="bar-fill" id="dist-bar" style="width:0%"></div><div class="bar-target"></div></div>
-    <div class="row" style="margin-top:2px"><span class="lbl">后退</span><span class="lbl">1.5m</span><span class="lbl">前进</span></div>
+    <div class="bar-wrap"><div class="bar-fill" id="dist-bar" style="width:0%"></div></div>
+    <div class="row" style="margin-top:2px"><span class="lbl">远</span><span class="lbl">近</span></div>
   </div>
   <div class="grid2" style="margin-top:8px">
     <div><div class="lbl">ToF 测距</div><div class="val" id="vis-tof">--</div></div>
@@ -228,15 +229,12 @@ function update(){
   fetch('/status').then(r=>r.json()).then(d=>{
     let v=d.vis,c=d.car,s=d.sys,x=d.rx;
 
-    // Car
-    let N=1275,th=c.th||N,st=c.st||N,d=th-N,act='STOP',acl='idle';
-    if(d>40){act='FWD';acl='ok';}
-    else if(d<-40){act='REV';acl='warn';}
-    if(Math.abs(d)>150)act=(d>0?'FAST_FWD':'FAST_REV');
-    else if(Math.abs(d)>60)act=(d>0?'SLOW_FWD':'SLOW_REV');
-    if(st>N+25)act+=' R';else if(st<N-25)act+=' L';
+    // Car — 1275=停止 (ZTW Seal G2 中位)
+    let th=c.th||1275,st=c.st||1275,act='STOP';
+    if(th>1295)act='FWD';else if(th<1255)act='REV';
+    if(st>1295)act+=' +R';else if(st<1255)act+=' +L';
     let cb=document.getElementById('car-badge');
-    cb.textContent=act;cb.className='badge '+acl;
+    cb.textContent=act;cb.className='badge '+(act==='STOP'?'idle':'ok');
     document.getElementById('car-th').textContent=th+' μs';
     document.getElementById('car-st').textContent=st+' μs';
 
@@ -252,12 +250,9 @@ function update(){
     document.getElementById('vis-fy').textContent=v.hp?v.fy:'--';
     document.getElementById('vis-offset').textContent=v.hp?(v.cx-96)+' / '+v.cx:'--';
     document.getElementById('vis-size').textContent=v.hp?v.w+'x'+v.h:'--';
-    let ds=v.ds||0,pct=Math.min(100,ds*100);
-    let bar=document.getElementById('dist-bar');
+    let bar=document.getElementById('dist-bar'),pct=Math.min(100,v.ds*100);
     bar.style.width=pct+'%';
-    // 双向: 0.5=目标(绿), >0.7=近(红), <0.3=远(蓝)
-    let bc=ds>=0.9?'r':ds>=0.65?'y':ds<=0.1?'b':ds<=0.3?'b':(ds>=0.45&&ds<=0.55)?'g':'y';
-    bar.className='bar-fill '+bc;
+    bar.className='bar-fill '+(v.ds>=0.9?'r':v.ds>=0.7?'y':v.ds>=0.45?'g':v.ds>=0.2?'g':'b');
 
     // RX
     if(x){
