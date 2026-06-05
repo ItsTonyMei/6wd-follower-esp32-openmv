@@ -49,7 +49,7 @@ CAMERA_STABILIZE_MS = 2000
 
 # ─── 推理 ───
 SENSOR_SKIP_FRAMES  = 0 if IS_N6 else 2  # N6: NPU 实时, H7: 跳2帧 ~10FPS
-DETECTION_THRESHOLD = 0.4                # YOLO 置信度阈值
+DETECTION_THRESHOLD = 0.5                # YOLO 置信度阈值
 
 # ─── VIS 输出 (P2 UART4 TX → ESP32 GPIO4) ───
 VIS_BAUD        = 4800
@@ -82,7 +82,7 @@ LED_TOF_LOST_BLINK = 8                   # ToF 丢失时绿闪周期 (帧)
 DRAW_DEBUG        = True
 PRINT_EVERY_MS    = 500                  # 串口状态打印间隔 (ms)
 GC_EVERY_FRAMES   = 50 if IS_N6 else 10  # 垃圾回收间隔 (N6 RAM 更充裕)
-NO_PERSON_STOP_FRAMES = 5                # 连续无人帧数 (暂未使用)
+NO_PERSON_STOP_FRAMES = 5                # 连续无人帧暂留 (防瞬时丢帧急停)
 
 # ─── 校验 ───
 assert 0.0 <= DETECTION_THRESHOLD <= 1.0
@@ -349,6 +349,9 @@ no_person_count = 0
 total_detections = 0
 uart_errors = 0
 tof_distance = 0
+_last_cx = _last_cy = _last_w = _last_h = _last_fy = 0
+_last_score = _last_ds = 0.0
+_last_cat = ""; _last_rect = None
 
 while True:
     clock.tick()
@@ -399,6 +402,21 @@ while True:
         person_rect = (x, y, w, h)
         no_person_count = 0
         total_detections += 1
+        # 暂存最后已知有效数据 (丢帧暂留用)
+        _last_cx = target_cx; _last_cy = target_cy
+        _last_w = target_w; _last_h = target_h; _last_fy = target_feet_y
+        _last_score = score; _last_ds = dist_score; _last_cat = dist_category
+        _last_rect = person_rect
+    elif no_person_count < NO_PERSON_STOP_FRAMES:
+        no_person_count += 1
+        # 瞬时丢帧暂留: 沿用上次已知数据, 距离分随时间衰减
+        decay = 1.0 - no_person_count / float(NO_PERSON_STOP_FRAMES)
+        target_cx = _last_cx; target_cy = _last_cy
+        target_w = _last_w; target_h = _last_h; target_feet_y = _last_fy
+        score = _last_score * decay
+        dist_score = _last_ds * decay
+        dist_category = _last_cat
+        person_rect = _last_rect
     else:
         no_person_count += 1
 

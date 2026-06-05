@@ -3,14 +3,31 @@
 static constexpr int FRAME_CENTER = 96;
 
 MotorCmd FollowLogic::update(bool hasPerson, int cx, int feetY, float distScore) {
+    // 丢人暂留: 5 帧内保持上次油门并线性衰减, 防止瞬时丢帧急停
+    static int      lostFrames  = 0;
+    static MotorCmd lastGoodCmd = {PWM_NEUTRAL, PWM_NEUTRAL};
+
     if (!hasPerson) {
-        return {PWM_NEUTRAL, PWM_NEUTRAL};
+        lostFrames++;
+        if (lostFrames >= 5) {
+            lastGoodCmd = {PWM_NEUTRAL, PWM_NEUTRAL};
+            return lastGoodCmd;
+        }
+        // 线性衰减回中位
+        float t = lostFrames / 5.0f;
+        int diff = (int)PWM_NEUTRAL - (int)lastGoodCmd.throttle;
+        uint16_t thr = (uint16_t)((int)lastGoodCmd.throttle + (int)(diff * t));
+        uint16_t str = PWM_NEUTRAL;  // 丢人时直行, 不保留转向
+        return {thr, str};
     }
+    lostFrames = 0;
+
     if (distScore > 0.0f) {
-        return handleDistScore(cx, distScore);
+        lastGoodCmd = handleDistScore(cx, distScore);
     } else {
-        return handleFeetY(cx, feetY);
+        lastGoodCmd = handleFeetY(cx, feetY);
     }
+    return lastGoodCmd;
 }
 
 uint16_t FollowLogic::throttleFromScore(float score) {
