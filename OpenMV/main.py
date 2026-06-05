@@ -62,8 +62,7 @@ TOF_MAX_VALID = 4000                     # mm, > this → 无效 (超量程, 退
 TOF_STOP_MM   = 500                      # < this → distScore = 1.0 (极限逼近)
 TOF_TARGET_MM = 1500                     # = this → distScore = 0.5 (目标跟随距离, 停止)
 TOF_FAR_MM    = 4000                     # > this → distScore ≈ 0.0 (全速前进追赶)
-TOF_SMOOTH_ALPHA = 0.3                   # EMA 平滑系数 (0-1, 越小越平滑)
-# 视觉备用参数 (ToF 无效时启用, 暂保留单向前进逻辑)
+# Kalman2D 替代 EMA: bbox (cx,w) 四状态恒速滤波, 丢帧时自动外推
 # 视觉备用参数 (ToF 无效时启用)
 AREA_VERY_CLOSE = 0.50
 AREA_CLOSE      = 0.30
@@ -174,10 +173,121 @@ except Exception as e:
     print("VL53L1X: N/A (%s)" % e)
 
 # ============================================================================
-# Distance estimation: ToF fusion + visual fallback + EMA smoothing
+# Kalman2D: 4 状态恒速滤波 (cx, w, vx, vw) — 替换 EMA 平滑
+# 预测模型: const-velocity, 测量: (cx, w) from YOLO
+# 丢帧时直接用 predict() 外推, 无需额外暂留逻辑
 # ============================================================================
 
-_smooth_score = -1.0   # EMA 平滑后的全局 distScore (-1 = 未初始化)
+class Kalman2D:
+    def __init__(self, dt=0.025, q_pos=5.0, q_vel=50.0, r_cx=9.0, r_w=25.0):
+        self.dt = dt
+        self.x = None      # [cx, w, vx, vw]
+        # 过程噪声 Q (离散恒速模型)
+        dt2 = dt * dt; dt3 = dt2 * dt / 2; dt4 = dt2 * dt2 / 4
+        self.Q = [
+            dt4 * q_vel, 0, dt3 * q_vel, 0,
+            0, dt4 * q_vel, 0, dt3 * q_vel,
+            dt3 * q_vel, 0, dt2 * q_vel, 0,
+            0, dt3 * q_vel, 0, dt2 * q_vel
+        ]
+        # 加回位置噪声
+        self.Q[0] += dt2 * q_pos; self.Q[5] += dt2 * q_pos; self.Q[10] += q_pos; self.Q[15] += q_pos
+        # 测量噪声 R
+        self.R = [r_cx, 0, 0, r_w]
+        self.H = [1, 0, 0, 0, 0, 1, 0, 0]  # 2x4 in row-major
+        self._init_P()
+
+    def _init_P(self):
+        self.P = [100.0, 0, 0, 0, 0, 100.0, 0, 0, 0, 0, 400.0, 0, 0, 0, 0, 400.0]
+
+    def init(self, cx, w):
+        self.x = [float(cx), float(w), 0.0, 0.0]
+        self._init_P()
+
+    def predict(self):
+        """恒速外推: x = F*x, P = F*P*F' + Q"""
+        dt = self.dt
+        x = self.x; P = self.P; Q = self.Q
+        # Fx: [cx + dt*vx, w + dt*vw, vx, vw]
+        nx = [x[0] + dt * x[2], x[1] + dt * x[3], x[2], x[3]]
+        # FP: 4x4. Each row of FP is linear combo of P rows
+        fm = [1, 0, dt, 0, 0, 1, 0, dt, 0, 0, 1, 0, 0, 0, 0, 1]  # F row-major
+        nP = [0]*16
+        for r in range(4):
+            for c in range(4):
+                s = 0.0
+                for k in range(4):
+                    s += fm[r*4+k] * P[k*4+c]  # F[r,k] * P[k,c]
+                nP[r*4+c] = s
+        # nP = FP. Now P' = (FP)*F' + Q
+        for r in range(4):
+            for c in range(4):
+                s = 0.0
+                for k in range(4):
+                    s += nP[r*4+k] * fm[c*4+k]  # FP[r,k] * F'[k,c]
+                self.P[r*4+c] = s + Q[r*4+c]
+        self.x = nx
+
+    def update(self, zx, zw):
+        """观测更新: K = P*H'/(H*P*H'+R), x+=K*(z-Hx), P=(I-KH)*P"""
+        if self.x is None:
+            self.init(zx, zw)
+            return self.x[0], self.x[1]
+
+        self.predict()
+        x = self.x; P = self.P; H = self.H; R = self.R
+
+        # 残差 y = z - Hx
+        y0 = zx - x[0]
+        y1 = zw - x[1]
+
+        # S = HPH' + R (2x2)
+        s00 = P[0] + R[0]; s01 = P[1]; s10 = P[4]; s11 = P[5] + R[3]
+        det = s00 * s11 - s01 * s10
+        if det < 1e-9: det = 1e-9
+        inv = [s11/det, -s01/det, -s10/det, s00/det]
+
+        # K = P*H' * S^-1 (4x2)
+        K = [0]*8
+        for r in range(4):
+            K[r*2]   = P[r*4] * inv[0] + P[r*4+1] * inv[2]
+            K[r*2+1] = P[r*4] * inv[1] + P[r*4+1] * inv[3]
+
+        # x = x + K*y
+        x[0] += K[0]*y0 + K[1]*y1
+        x[1] += K[2]*y0 + K[3]*y1
+        x[2] += K[4]*y0 + K[5]*y1
+        x[3] += K[6]*y0 + K[7]*y1
+
+        # P = (I-KH)*P
+        for r in range(4):
+            ikh_r0 = (1.0 if r==0 else 0.0) - K[r*2]*H[0] - K[r*2+1]*H[4]
+            ikh_r1 = (0.0 if r!=0 else 0.0)  - K[r*2]*H[1] - K[r*2+1]*H[5]
+            ikh_r2 = (0.0)                    - K[r*2]*H[2] - K[r*2+1]*H[6]
+            ikh_r3 = (0.0)                    - K[r*2]*H[3] - K[r*2+1]*H[7]
+            # adjust: I - KH
+            ikh_r0 += (1.0 if r==0 else 0.0)
+            ikh_r1 += (1.0 if r==1 else 0.0)
+            ikh_r2 += (1.0 if r==2 else 0.0)
+            ikh_r3 += (1.0 if r==3 else 0.0)
+            for c in range(4):
+                s = ikh_r0*P[c] + ikh_r1*P[4+c] + ikh_r2*P[8+c] + ikh_r3*P[12+c]
+                self.P[r*4+c] = s
+
+        return x[0], x[1]
+
+    def predict_pos(self):
+        """纯预测 (丢帧外推): 返回 (cx_pred, w_pred)"""
+        if self.x is None:
+            return 0, 0
+        self.predict()
+        return self.x[0], self.x[1]
+
+_kf = Kalman2D()
+
+# ============================================================================
+# Distance estimation: ToF fusion + visual fallback + EMA smoothing
+# ============================================================================
 
 def tof_to_dist_score(tof_mm):
     """ToF 距离 (mm) → distScore (0.0-1.0), 双向分段线性映射.
@@ -234,21 +344,16 @@ def vision_dist_score(w, h, feet_y, frame_w, frame_h):
         return ("FULL_SPEED", score, area_ratio)
 
 def fused_distance(tof_mm, w, h, feet_y, frame_w, frame_h):
-    """融合距离估计: ToF 主信号 + EMA 平滑 + 视觉备用.
+    """融合距离估计: ToF 主信号 + 视觉备用.
+       bbox 平滑由 Kalman2D 在上游完成, 此处无需再 EMA.
        返回 (category_str, dist_score)."""
-    global _smooth_score
 
     raw = tof_to_dist_score(tof_mm)
 
     if raw >= 0:  # ToF 有效
-        if _smooth_score < 0:
-            _smooth_score = raw
-        else:
-            _smooth_score = TOF_SMOOTH_ALPHA * raw + (1 - TOF_SMOOTH_ALPHA) * _smooth_score
-        score = _smooth_score
+        score = raw
     else:         # ToF 无效, 退回视觉
         _, score, _ = vision_dist_score(w, h, feet_y, frame_w, frame_h)
-        _smooth_score = -1  # 重置平滑, 下次 ToF 有效时重新初始化
 
     # distScore → category (双向: 0.5=目标停止, >0.5=近/后退, <0.5=远/前进)
     if score >= 0.90:
@@ -349,9 +454,6 @@ no_person_count = 0
 total_detections = 0
 uart_errors = 0
 tof_distance = 0
-_last_cx = _last_cy = _last_w = _last_h = _last_fy = 0
-_last_score = _last_ds = 0.0
-_last_cat = ""; _last_rect = None
 
 while True:
     clock.tick()
@@ -376,13 +478,11 @@ while True:
         except:
             pass  # 保持上次有效读数
 
-    # Detection
+    # Detection + Kalman 滤波
     results = model.predict([img])
     detections = results[person_idx] if person_idx < len(results) else []
 
-    person_rect = None
-    dist_category = ""
-    dist_score = 0.0
+    person_rect = None; dist_category = ""; dist_score = 0.0
     target_cx = target_cy = target_w = target_h = target_feet_y = 0
 
     if detections:
@@ -390,10 +490,14 @@ while True:
         rect, score = detections[0]
         x, y, w, h = rect[0], rect[1], rect[2], rect[3]
 
-        target_cx = int(x + w // 2)
-        target_cy = int(y + h // 2)
-        target_w  = int(w)
-        target_h  = int(h)
+        # Kalman 更新: 观测 (cx, w)
+        cx_raw = int(x + w // 2)
+        w_raw  = int(w)
+        kf_cx, kf_w = _kf.update(cx_raw, w_raw)
+        target_cx  = int(kf_cx)
+        target_w   = max(1, int(kf_w))
+        target_cy  = int(y + h // 2)       # cy, h, feetY 不做卡尔曼
+        target_h   = int(h)
         target_feet_y = int(y + h)
 
         dist_category, dist_score = fused_distance(
@@ -402,21 +506,16 @@ while True:
         person_rect = (x, y, w, h)
         no_person_count = 0
         total_detections += 1
-        # 暂存最后已知有效数据 (丢帧暂留用)
-        _last_cx = target_cx; _last_cy = target_cy
-        _last_w = target_w; _last_h = target_h; _last_fy = target_feet_y
-        _last_score = score; _last_ds = dist_score; _last_cat = dist_category
-        _last_rect = person_rect
     elif no_person_count < NO_PERSON_STOP_FRAMES:
         no_person_count += 1
-        # 瞬时丢帧暂留: 沿用上次已知数据, 距离分随时间衰减
+        # 丢帧: 卡尔曼外推, 距离分随时间衰减
+        kf_cx, kf_w = _kf.predict_pos()
         decay = 1.0 - no_person_count / float(NO_PERSON_STOP_FRAMES)
-        target_cx = _last_cx; target_cy = _last_cy
-        target_w = _last_w; target_h = _last_h; target_feet_y = _last_fy
-        score = _last_score * decay
-        dist_score = _last_ds * decay
-        dist_category = _last_cat
-        person_rect = _last_rect
+        target_cx = int(kf_cx); target_w = max(1, int(kf_w))
+        target_h = max(1, int(kf_w * 0.8))  # 估算 h
+        target_feet_y = target_h * 2
+        dist_score = fused_distance(
+            tof_distance, target_w, target_h, target_feet_y, img_w, img_h)[1] * decay
     else:
         no_person_count += 1
 
