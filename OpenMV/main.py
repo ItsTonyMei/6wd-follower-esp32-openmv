@@ -114,7 +114,8 @@ def setup_camera():
                 getattr(_cam_obj, m)(CAMERA_GAINCEILING)
                 break
         # N6: 不裁剪，用完整 QVGA 分辨率（模型自动居中裁剪到 192x192）
-        _cam_obj.snapshot(time=CAMERA_STABILIZE_MS)
+        time.sleep_ms(CAMERA_STABILIZE_MS)
+        _cam_obj.snapshot()
     else:
         _cam_mod.reset()
         _cam_mod.set_contrast(CAMERA_CONTRAST)
