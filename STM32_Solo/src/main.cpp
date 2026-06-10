@@ -2,20 +2,20 @@
  * STM32F103C8T6 — L3 执行与安全层 (双路独立无刷电调)
  *
  * 功能:
- *   1. PS2 手柄控制 (CN4: PB12-PB15) — 手动遥控, 优先于 ESP8266
- *   2. USART3 (PB10=TX, PB11=RX) 接收 ESP8266 MotorCmd 下行协议
+ *   1. PS2 手柄控制 (CN4: PB12-PB15) — 手动遥控, 优先于 ESP32/ESP8266
+ *   2. USART3 (PB10=TX, PB11=RX) 接收 ESP32/ESP8266 MotorCmd 下行协议
  *   3. TIM3 CH3 (PB0) → 左电机 ESC, CH4 (PB1) → 右电机 ESC
  *   4. 50Hz PWM 输出 + 坦克混控 (tank-mix)
  *   5. 60s 无操作 → 自动锁定 (FAILSAFE) | 30s 数据冻结 → 休眠锁定
  *   6. LED2 (PA4, 蓝灯) 模式指示 + 蜂鸣器 (PA3, 经跳线, active-HIGH)
  *
- * 控制优先级: PS2 手柄 (已连接时) > ESP8266 串口
+ * 控制优先级: PS2 手柄 (已连接时) > ESP32/ESP8266 串口
  *
  * 定制板 (C06B):
  *   MCU: STM32F103C8T6 (Cortex-M3, 72MHz, 64KB Flash, 20KB SRAM)
  *   USB-UART: CH9102 via USART1 (PA9=TX, PA10=RX) — 烧录+调试
  *   PS2: CN4 6P (PB12=CLK, PB13=CS, PB14=CMD, PB15=DATA)
- *   ESP8266: USART3 (PB10=TX, PB11=RX) ← ESP8266 D7/D8
+ *   L2: USART3 (PB10=TX, PB11=RX) ← ESP32 (Serial2) / ESP8266 (UART0 swapped)
  *   ESC: PB0=左电机(→H8), PB1=右电机(→H9) — 两路三相无刷电调
  *   烧录: PlatformIO serial @ 115200, -dtr,rts,dtr,,,,
  */
@@ -68,8 +68,8 @@ constexpr uint8_t PIN_LED2 = PA4;              // LED2 蓝色, active-LOW
 HardwareSerial SerialUSART1(PA10, PA9);
 #define Serial SerialUSART1
 
-// USART3: ESP8266 通信
-HardwareSerial SerialESP(PB11, PB10);           // RX=PB11←ESP D8, TX=PB10→ESP D7
+// USART3: ESP32/ESP8266 通信
+HardwareSerial SerialESP(PB11, PB10);           // RX=PB11←L2 TX, TX=PB10→L2 RX
 
 // ─── PS2 引脚宏 (C06B CN4: PB15=DATA, PB14=CMD, PB13=CS, PB12=CLK) ───
 #define PS2_DAT     ((GPIOB->IDR >> 15) & 1)
@@ -89,12 +89,12 @@ static uint16_t  g_steering   = PWM_NEUTRAL;
 static uint32_t  g_lastCmdMs  = 0;
 static bool      g_escReady   = false;
 static bool      g_motorArmed = false;
-static bool      g_espMode    = false;          // false=PS2, true=ESP8266
+static bool      g_espMode    = false;          // false=PS2, true=ESP32/ESP8266
 static uint8_t   g_ps2_lx     = 128;
 static uint8_t   g_ps2_ly     = 128;
 
 // ═══════════════════════════════════════════════════════════════
-// CRC8 (poly 0x07, init 0x00 — 与 ESP8266 一致)
+// CRC8 (poly 0x07, init 0x00 — 与 ESP32/ESP8266 一致)
 // ═══════════════════════════════════════════════════════════════
 
 static uint8_t crc8(const uint8_t *data, size_t len) {
@@ -269,7 +269,7 @@ void setup() {
     delay(100);
 
     Serial.println("\nSTM32 Dual BLDC Tracked Controller");
-    Serial.println("[USART3] PB11(RX) PB10(TX) @ 115200 baud ← ESP8266");
+    Serial.println("[USART3] PB11(RX) PB10(TX) @ 115200 baud ← L2 控制器");
 
     pinMode(PIN_LED2, OUTPUT);
     digitalWrite(PIN_LED2, HIGH);
@@ -353,7 +353,7 @@ void loop() {
                 if (g_motorArmed) { g_motorArmed = false; escSet(PWM_NEUTRAL, PWM_NEUTRAL); }
                 beepDisarm();
                 Serial.print("[PS2] 切换到 ");
-                Serial.println(g_espMode ? "ESP8266 模式" : "PS2 手柄模式");
+                Serial.println(g_espMode ? "ESP 模式" : "PS2 手柄模式");
             }
             lastSel = selRel;
 
@@ -396,7 +396,7 @@ void loop() {
         }
     }
 
-    // ─── 2. ESP8266 串口接收 (USART3, PB11=RX ← ESP8266 D8) ───
+    // ─── 2. L2 串口接收 (USART3, PB11=RX ← ESP32/ESP8266 TX) ───
     while (SerialESP.available() >= 6) {
         if (SerialESP.read() != 0xAA) continue;
 

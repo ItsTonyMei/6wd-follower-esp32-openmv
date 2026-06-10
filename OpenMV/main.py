@@ -1,7 +1,7 @@
 # ============================================================================
 # 履带车视觉跟随系统 — OpenMV L1 感知层
 # N6: YOLOv8n NPU 45FPS + VL53L1X ToF (I2C2, P4/P5)
-# VIS 输出: P2 UART4 TX @ 4800 baud → ESP32 GPIO4 (SoftwareSerial)
+# VIS 输出: P2 UART4 TX @ 4800 baud → ESP32 GPIO4 (主) 或 ESP8266 D5/GPIO14 (备用)
 # P4/P5 = VL53L1X ToF (I2C2), P0 = SPI2 only (无 UART)
 # LED: 红=错误, 绿=有人+ToF有效, 蓝=扫描中
 # ============================================================================

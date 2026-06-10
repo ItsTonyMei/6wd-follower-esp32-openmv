@@ -1,5 +1,5 @@
 // ============================================================================
-// FollowLogic 单元测试 (HC6060A 混控款)
+// FollowLogic 单元测试 (ESP32/ESP8266 通用算法)
 // 测试: throttle/steering PWM 脉宽输出、距离映射、转向比例控制
 // ============================================================================
 
@@ -182,7 +182,7 @@ void test_steering_proportional() {
 }
 
 int main() {
-    printf("=== FollowLogic Tests (HC6060A Mixed-Mode) ===\n\n");
+    printf("=== FollowLogic Tests (ESP32/ESP8266 通用算法) ===\n\n");
     test_no_person();
     test_dist_stop();
     test_dist_far_center();

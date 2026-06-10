@@ -2,17 +2,17 @@
 #include <Arduino.h>
 
 // ============================================================================
-// 履带车视觉跟随系统 — ESP8266 配置 (替代 ESP32)
+// 履带车视觉跟随系统 — ESP8266 备用控制器配置
 // 所有引脚、阈值、参数的单一数据源
 // ============================================================================
 //
-// 架构: OpenMV (L1感知) → ESP8266 (L2决策+WiFi) → STM32 (L3执行+安全)
-// ESP8266 替代 ESP32 全部功能: VIS接收 + FollowLogic + Dashboard + STM32通信
+// 架构: OpenMV (L1感知) → ESP32 (L2决策+WiFi, 主) 或 ESP8266 (备用) → STM32 (L3执行+安全)
+// ESP8266 为下位备用硬件: VIS接收 + FollowLogic + Dashboard + STM32通信 (算法/协议与 ESP32 一致)
 //
 // 供电: 48V 89Ah 锂电池 → 48V→5V 10A 防水降压 → ESP8266 (USB)
 //
 // 动力: 两台三相无刷电机 + 双路独立无刷 ESC
-// STM32 端坦克混控: left = thr + (st-1500), right = thr - (st-1500)
+// STM32 端坦克混控: left = thr + (st-PWM_NEUTRAL), right = thr - (st-PWM_NEUTRAL)
 
 // ─── 引脚分配 ───
 // ┌──────────────────┬────────────────┬─────────────────────────────┐
@@ -39,7 +39,7 @@ constexpr char WIFI_SSID[] = "Tracked Robot";
 constexpr char WIFI_PASS[] = "12345678";
 
 // ─── 双路无刷电调 PWM 参数 ───
-// 50Hz 舵机 PWM: 1000-2000μs, 中位 1500μs
+// 50Hz 舵机 PWM: 650-1900μs, 中位 1275μs (ZTW Seal G2 非标)
 // MotorCmd {throttle, steering} → STM32 坦克混控 → 左/右独立 PWM
 constexpr uint16_t PWM_NEUTRAL         = 1275;  // 与 STM32 C06B 一致 (ZTW Seal G2 中位)
 constexpr uint16_t PWM_MIN             = 650;
@@ -59,6 +59,6 @@ constexpr uint32_t ESC_INIT_DELAY_MS     = 3000;
 // ─── MotorCmd ───
 // throttle/steering 发送到 STM32 后由坦克混控转换为左/右电机 PWM
 struct MotorCmd {
-    uint16_t throttle;  // 油门 (1000-2000μs, 1500=停止)
-    uint16_t steering;  // 转向 (1000-2000μs, 1500=直行)
+    uint16_t throttle;  // 油门 (650-1900μs, 1275=停止)
+    uint16_t steering;  // 转向 (650-1900μs, 1275=直行)
 };

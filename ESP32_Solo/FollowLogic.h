@@ -7,11 +7,10 @@
 // FollowLogic: 人员跟随决策逻辑
 // FollowLogic: person-following decision logic
 //
-// 根据 OpenMV 传来的视觉数据 (cx, feetY, distScore)，输出 MotorCmd 通过
-// FreeRTOS queue 发送给 MotorTask。
-// HC6060A 混控款电调: MotorCmd.throttle/steering 直接对应白线/黄线 PWM 脉宽 (μs)
-//
+// 根据 OpenMV 传来的视觉数据 (cx, feetY, distScore)，输出 MotorCmd
+// {throttle, steering} 通过串口发送到 STM32 做坦克混控。
 // 坐标系统: 192×192 YOLO model 窗口, 中心 cx=96
+// ESP32 与 ESP8266 共享此算法 (完全相同)。
 // ============================================================================
 class FollowLogic {
 public:

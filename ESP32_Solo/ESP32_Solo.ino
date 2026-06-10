@@ -1,7 +1,8 @@
 // ============================================================================
-// 履带车视觉跟随系统 — ESP32 精简 L2 控制器 (2026-06-03 重新启用)
+// 履带车视觉跟随系统 — ESP32 主 L2 控制器 (2026-06-03 重新启用)
 // MCU: ESP32-WROOM-32U (DevKit V1), 240MHz, 4MB Flash
-// 功能匹配 ESP8266: VIS接收 + FollowLogic + STM32通信 + WiFi Dashboard
+// 功能: VIS接收 + FollowLogic + STM32通信 + WiFi Dashboard
+// ESP8266 为下位备用硬件 (FollowLogic 算法相同, 协议一致)
 //
 // 引脚:
 //   GPIO4  ← OpenMV P0 HW UART(3) (SoftwareSerial, 4800 baud)

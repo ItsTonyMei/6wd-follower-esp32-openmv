@@ -17,7 +17,7 @@
 | **ESP8266 VIS 接收** | ✅ 已验证 | D5(GPIO14) SoftwareSerial @ 4800 ← N6, 97%+ 成功率 |
 | **ESP8266 WiFi Dashboard** | ✅ 已验证 | AP "Tracked Robot", HTTP :80, `/status` JSON |
 | **OpenMV N6** | ✅ 已验证 | YOLOv8n NPU 45FPS, VL53L1X ToF (I2C2 P4/P5), VIS P2 UART4 @ 4800 (STM32N657) |
-| **ESP32** | ✅ 重新启用 | 精简固件就绪 (2026-06-03)。4文件单线程架构，功能匹配 ESP8266。烧录需 `--no-stub`。GPIO2 LED 正常。详见 `ESP32_Solo/DEPRECATED.md` |
+| **ESP32** | ✅ 主控制器 | 精简固件就绪 (2026-06-03 重新启用)。4文件单线程架构，功能匹配 ESP8266。烧录需 `--no-stub`。GPIO2 LED 正常。详见 `ESP32_Solo/DEPRECATED.md` |
 | **HC6060A 有刷电调** | ❌ 已废弃 | 实车使用三相无刷电机, 替换为双路独立无刷电调 |
 | **ZTW Seal G2 无刷电调** | ✅ 已解决 | 核心发现: 该电调中位在~1275μs而非1500μs。STM32在1500μs时被电调判定为前进, FPV接收机因脉宽波形差异恰好匹配。修改PWM_NEUTRAL=1275后正常 |
 
@@ -54,15 +54,16 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                     L1: 感知层 (OpenMV N6)                    │
-│   YOLO person detection + VL53L1X ToF → VIS/UART → ESP8266   │
+│   YOLO person detection + VL53L1X ToF → VIS/UART → ESP32     │
 ├──────────────────────────────────────────────────────────────┤
-│                     L2: 决策层 (ESP8266)                      │
+│                     L2: 决策层 (ESP32, 主)                    │
 │   FollowLogic + WiFi Dashboard + VIS 接收                    │
 │   接收: OpenMV VIS帧                                          │
 │   输出: MotorCmd {throttle, steering} → UART → STM32          │
+│   备用: ESP8266 NodeMCU V3 (FollowLogic 算法相同)              │
 ├──────────────────────────────────────────────────────────────┤
 │                   L3: 执行与安全层 (STM32)                     │
-│   PS2 手柄 + ESP8266 串口                                     │
+│   PS2 手柄 + ESP32/ESP8266 串口                                │
 │   坦克混控: throttle+steering → 左/右独立 PWM                  │
 │   输出: PB0(左电机) + PB1(右电机) → 双路三相无刷 ESC           │
 │   无操作 60s 锁定 + 休眠 30s 锁定 + 断连立即锁定                │
@@ -83,38 +84,38 @@
 ## 数据流
 
 ```
-OpenMV N6                     ESP8266                        STM32
-─────────                     ───────                        ──────
-YOLO检测                       VIS接收 (SoftwareSerial)       PS2 轮询 (50Hz)
-  │                              │                             │
-  ├── VL53L1X ToF (I2C)          ▼                             ├── ESP8266 串口
-  │     └→ 距离(mm)             FollowLogic.update()            │    (USART3, 已打通)
-  ▼                              │                             ▼
-视觉+ToF融合距离                  ▼                            MotorCmd 解析
-  │                             MotorCmd {thr, st} μs           │
-  ▼                              │                             ▼
-VIS帧组装                        ▼                            坦克混控 (tank-mix)
-  │                             UART0 swapped → STM32           │   left = thr + (st-PWM_NEUTRAL)
-P2 UART4@4800 → ESP32/ESP8266      6-byte binary + CRC8             │   right = thr - (st-PWM_NEUTRAL)
-                                                                 ▼
-                                                               TIM3 PWM 输出
-                                                                 │   PB0=左电机 ESC
-                                                                 │   PB1=右电机 ESC
-                                                                 ▼
-                                                              安全监控
-                                                                · 60s 无操作锁定
-                                                                · 30s 休眠锁定
-                                                                · PS2 断连锁定
+OpenMV N6                     ESP32 (主) / ESP8266 (备用)       STM32
+─────────                     ─────────────────────────        ──────
+YOLO检测                       VIS接收 (SoftwareSerial)         PS2 轮询 (50Hz)
+  │                              │                               │
+  ├── VL53L1X ToF (I2C)          ▼                               ├── ESP32/ESP8266 串口
+  │     └→ 距离(mm)             FollowLogic.update()              │    (USART3, 已打通)
+  ▼                              │                               ▼
+视觉+ToF融合距离                  ▼                              MotorCmd 解析
+  │                             MotorCmd {thr, st} μs             │
+  ▼                              │                               ▼
+VIS帧组装                        ▼                              坦克混控 (tank-mix)
+  │                             Serial2 → STM32                   │   left = thr + (st-PWM_NEUTRAL)
+P2 UART4@4800 → ESP32/ESP8266      6-byte binary + CRC8               │   right = thr - (st-PWM_NEUTRAL)
+                                                                   ▼
+                                                                 TIM3 PWM 输出
+                                                                   │   PB0=左电机 ESC
+                                                                   │   PB1=右电机 ESC
+                                                                   ▼
+                                                                 安全监控
+                                                                  · 60s 无操作锁定
+                                                                  · 30s 休眠锁定
+                                                                  · PS2 断连锁定
 ```
 
 ---
 
 ## Phase 0 — 项目初始化与硬件验证 ✅ 核心完成
 
-**状态**: STM32 ✅ | OpenMV N6 ✅ | ESP8266 ✅ | ESP32 ❌ 已废弃 | HC6060A ❌ 已废弃
+**状态**: STM32 ✅ | OpenMV N6 ✅ | ESP32 ✅ (主) | ESP8266 ✅ (备用) | HC6060A ❌ 已废弃
 
 > **动力方案变更**: 实车为两台三相无刷电机，需要双路独立无刷电调 + MCU 坦克混控。
-> **ESP8266 已成为永久 L2 控制器** (替代 ESP32)。ESP32_Solo/ 保留作为参考实现。
+> **ESP32 于 2026-06-03 重新启用为主 L2 控制器**。ESP8266 保留为下位备用硬件。两者 FollowLogic 算法完全相同。
 > **待推进**: 坦克混控实车验证, 自动跟随联调
 
 ### 0.1 STM32F103C8T6 开发环境 ✅ 完成
@@ -126,17 +127,19 @@ P2 UART4@4800 → ESP32/ESP8266      6-byte binary + CRC8             │   righ
 - [x] **安全功能**: 上电锁定, START 解锁, 无操作 60s 锁定, 休眠 30s 锁定
 - [x] **代码重构**: 参数集中管理, RAM 13.5%, Flash 15.3%
 
-### 0.2 ESP8266 全功能控制器 ✅ 完成
-- [x] VIS 接收: D5(GPIO14) SoftwareSerial @ 4800, 97%+ 成功率
-- [x] FollowLogic 移植: 连续 throttle+steering 输出 (与 ESP32 算法一致)
-- [x] WiFi AP "Rover" + HTTP Dashboard (:80)
-- [x] STM32 通信: UART0 swapped (D8=TX→PB11, D7=RX←PB10), 115200
+### 0.2 ESP32 主控制器 ✅ 完成 (2026-06-03 重新启用)
+- [x] VIS 接收: GPIO4 SoftwareSerial @ 4800, 97%+ 成功率
+- [x] FollowLogic: 连续 throttle+steering 输出 (与 ESP8266 算法一致)
+- [x] WiFi AP "Tracked Robot" + HTTP Dashboard (:80)
+- [x] STM32 通信: Serial2 (GPIO17=TX→PB11, GPIO16=RX←PB10), 115200
 - [x] MotorCmd 下行协议: `[0xAA][th_lo][th_hi][st_lo][st_hi][CRC8]` 6-byte
 - [x] Config.h: 引脚/阈值/参数 SSOT
+- [x] USB-Serial Debug (GPIO1/3)
+- [x] ESP8266 保留为备用硬件 (FollowLogic 相同，可互换)
 
 ### 0.3 OpenMV N6 ✅ 完成
 - [x] YOLOv8n NPU @ 45FPS, VL53L1X ToF (I2C2: P4/P5, addr 0x29)
-- [x] VIS P0 硬件 UART(3) @ 4800 → ESP8266 D5 (替代 bit-bang 软件串口)
+- [x] VIS P2 硬件 UART4 @ 4800 → ESP32 GPIO4 (主) / ESP8266 D5 (备用)
 - [x] 帧格式: `VIS:cx,cy,w,h,feetY,conf,PERSON,distScore,tofDist*CS\r\n`
 
 ### 0.4 硬件清单
@@ -144,7 +147,8 @@ P2 UART4@4800 → ESP32/ESP8266      6-byte binary + CRC8             │   righ
 | 硬件 | 状态 | 用途 |
 |------|------|------|
 | STM32F103C8T6 (C06B 定制板) | **已有** | L3 执行+安全 |
-| ESP8266 NodeMCU V3 | **已有** | L2 决策+WiFi |
+| ESP32-WROOM-32U (DevKit V1) | **已有** | L2 决策+WiFi (主) |
+| ESP8266 NodeMCU V3 | **已有** | L2 决策+WiFi (备用) |
 | OpenMV Cam N6 + VL53L1X | **已有** | L1 感知 |
 | 三相无刷电机 ×2 | **随车已有** | 左右履带独立驱动 |
 | ZTW Seal G2 无刷电调 ×2 | **已有** | 独立控制左右电机 (PWM_NEUTRAL=1275μs) |
@@ -152,7 +156,6 @@ P2 UART4@4800 → ESP32/ESP8266      6-byte binary + CRC8             │   righ
 | 48V 89Ah 锂电池 | **随车已有** | 动力电源 |
 | PS2 无线手柄 | **已有** | 遥控测试 |
 | ~~HC6060A 有刷电调~~ | **已废弃** | 不兼容三相无刷电机 |
-| ~~ESP32-WROOM-32U~~ | **已废弃** | 被 ESP8266 替代 |
 | ELRS 遥控器 + 接收机 | ⏳ 待采购 | Phase 2 |
 | 急停按钮 + 继电器 | ⏳ 待采购 | 安全链路 #1 |
 
@@ -173,8 +176,8 @@ P2 UART4@4800 → ESP32/ESP8266      6-byte binary + CRC8             │   righ
 - [x] 控制器休眠 30s 自动锁定
 - [x] SELECT 切换 PS2/ESP8266 控制源
 
-### 1.3 ESP8266 串口通信 ✅ 已打通
-ESP8266 → STM32 下行 (每 50ms):
+### 1.3 ESP32/ESP8266 → STM32 串口通信 ✅ 已打通
+ESP32 (Serial2) / ESP8266 (UART0 swapped) → STM32 下行 (每 50ms):
 ```
 [0xAA] [throttle_lo] [throttle_hi] [steering_lo] [steering_hi] [CRC8]
 6 bytes, CRC8 over bytes 1-4, poly 0x07
@@ -204,13 +207,13 @@ ESP8266 → STM32 下行 (每 50ms):
 
 > 接收机通过 UART 输出 CRSF 协议帧。通道映射: CH1=转向, CH3=油门, CH5=模式, CH6=限速。
 > CRSF 协议自带 RSSI + LQ 链路质量, 失联自动 FailSafe。
-> ESP8266 硬件串口已用满 (UART0→STM32, UART1仅TX无RX)。Phase 2 换回 ESP32 (3路全双工 UART)。
+> ESP32 有 3 路硬件 UART (UART0=Debug, Serial2=STM32, UART1 预留 CRSF)，可直接接入。
 
 ---
 
-## Phase 3 — ESP8266 ↔ STM32 UART 通信 ✅ 已打通
+## Phase 3 — ESP32/ESP8266 ↔ STM32 UART 通信 ✅ 已打通
 
-**下行 (ESP8266 → STM32, 每 50ms)**:
+**下行 (ESP32 Serial2 / ESP8266 UART0 swapped → STM32, 每 50ms)**:
 ```
 [0xAA] [throttle_lo] [throttle_hi] [steering_lo] [steering_hi] [CRC8]
 6 bytes, uint16_t throttle/steering in μs (650-1900, 中位 1275)
@@ -232,11 +235,11 @@ STM32 收到后经坦克混控转换为左/右 PWM。
 
 ## Phase 4 — 自动跟随决策层 (FollowLogic 已就绪, 待联调)
 
-- [x] ESP8266 FollowLogic: 连续 throttle+steering 输出
+- [x] ESP32/ESP8266 FollowLogic: 连续 throttle+steering 输出 (两者算法完全相同)
 - [x] distScore 映射: FAR→全速, MID→中速, NEAR→慢速/STOP
 - [x] cx 偏移 → steering 比例控制
 - [x] 近距离转向抑制
-- [ ] 端到端链路: OpenMV VIS → ESP8266 FollowLogic → STM32 坦克混控 → 双路 ESC → 电机
+- [ ] 端到端链路: OpenMV VIS → ESP32 FollowLogic → STM32 坦克混控 → 双路 ESC → 电机
 - [ ] 实车跟随测试 + 坦克混控参数整定
 
 ---
@@ -263,8 +266,8 @@ STM32 收到后经坦克混控转换为左/右 PWM。
 
 ## Phase 7 — 全系统联调
 
-- [ ] 上电启动顺序: STM32 → ESP8266 → OpenMV
-- [ ] 端到端链路: 人→OpenMV→ESP8266→STM32→坦克混控→双路ESC→电机
+- [ ] 上电启动顺序: STM32 → ESP32 → OpenMV
+- [ ] 端到端链路: 人→OpenMV→ESP32→STM32→坦克混控→双路ESC→电机
 - [ ] 全链路延迟测试
 - [ ] 安全机制全测试
 
@@ -285,7 +288,7 @@ STM32 收到后经坦克混控转换为左/右 PWM。
 |--------|------|-----------|
 | M1: PS2 遥控 | ✅ | PS2 手柄控制履带车前进/后退/转向 |
 | M2: 安全层基本 | ✅ | 命令超时 + 休眠检测 + 断连保护 |
-| M3: ESP8266 控制器 | ✅ | VIS + FollowLogic + Dashboard 就绪 |
+| M3: ESP32 控制器 | ✅ | VIS + FollowLogic + Dashboard 就绪 (ESP8266 备用) |
 | M4: 无刷电调驱动 | ⏳ | 坦克混控 + 双路 ESC + 电机实车验证 |
 | M5: 自动跟随 | ⏳ | 人走车走, 人停车停 |
 | M6: 可以出门 | ⏳ | 户外各种地面稳定跟随 |

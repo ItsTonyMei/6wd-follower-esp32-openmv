@@ -1,7 +1,7 @@
 // ============================================================================
-// 履带车视觉跟随系统 — ESP8266 全功能控制器
+// 履带车视觉跟随系统 — ESP8266 备用 L2 控制器
 // MCU: ESP8266 NodeMCU V3 (ESP-12E), 80MHz, 4MB Flash
-// 替代 ESP32: VIS接收 + FollowLogic + STM32通信 + WiFi Dashboard
+// ESP32 为主控制器; ESP8266 为下位备用硬件 (FollowLogic 算法相同, 协议一致)
 //
 // 动力: 两台三相无刷电机 + 双路独立无刷 ESC
 // 控制: FollowLogic → MotorCmd {throttle, steering} → STM32 坦克混控 → 左/右 PWM
@@ -186,7 +186,7 @@ h2{font-size:13px;color:#58a6ff;margin:14px 0 6px;padding-bottom:4px;border-bott
   </div>
   <div style="margin-top:8px"><div class="lbl">距离估计</div>
     <div class="bar-wrap"><div class="bar-fill" id="dist-bar" style="width:0%"></div></div>
-    <div class="row" style="margin-top:2px"><span class="lbl">近</span><span class="lbl">远</span></div>
+    <div class="row" style="margin-top:2px"><span class="lbl">远</span><span class="lbl">近</span></div>
   </div>
   <div class="grid2" style="margin-top:8px">
     <div><div class="lbl">ToF 测距</div><div class="val" id="vis-tof">--</div></div>
@@ -236,9 +236,9 @@ function update(){
     let v=d.vis,c=d.car,s=d.sys,x=d.rx;
 
     // Car
-    let th=c.th||1500,st=c.st||1500,act='STOP';
-    if(th>1520)act='FWD';else if(th<1480)act='REV';
-    if(st>1520)act+=' +R';else if(st<1480)act+=' +L';
+    let th=c.th||1275,st=c.st||1275,act='STOP';
+    if(th>1295)act='FWD';else if(th<1255)act='REV';
+    if(st>1295)act+=' +R';else if(st<1255)act+=' +L';
     let cb=document.getElementById('car-badge');
     cb.textContent=act;cb.className='badge '+(act==='STOP'?'idle':'ok');
     document.getElementById('car-th').textContent=th+' μs';
